@@ -27,6 +27,7 @@ setup(
     entry_points={
         'console_scripts': [
             'terraforge = terraforge.cli:cli',
+            'terraforge-gui = terraforge.ui.main_window:main',
         ],
     },
 )

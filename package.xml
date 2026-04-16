@@ -12,9 +12,11 @@
 
   <exec_depend>ros_gz_sim</exec_depend>
   <exec_depend>python3-click</exec_depend>
+  <exec_depend>python3-gdal</exec_depend>
   <exec_depend>python3-jinja2</exec_depend>
   <exec_depend>python3-pil</exec_depend>
   <exec_depend>python3-pyproj</exec_depend>
+  <exec_depend>python3-pyqt6</exec_depend>
   <exec_depend>python3-requests</exec_depend>
   <exec_depend>python3-shapely</exec_depend>
 
