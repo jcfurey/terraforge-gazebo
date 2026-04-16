@@ -1,9 +1,9 @@
 
 import os
 from jinja2 import Environment, FileSystemLoader
-from utils.logging import logger
+from terraforge.utils.logging import logger
 
-from utils.coordinates import CoordinateConverter
+from terraforge.utils.coordinates import CoordinateConverter
 
 class SDFWorldBuilder:
     def __init__(self, template_dir='./templates'):

@@ -2,12 +2,12 @@
 
 import osmnx as ox
 from pathlib import Path
-from utils.config import Config
-from utils.logging import logger
-from data_acquisition.elevation import _calculate_bounds_wgs84
+from terraforge.utils.config import Config
+from terraforge.utils.logging import logger
+from terraforge.data_acquisition.elevation import _calculate_bounds_wgs84
 
 
-def download_osm_data(location: tuple, radius_meters: float, output_path: str) -> Path:
+def download_osm_buildings(location: tuple, radius_meters: float, output_path: str) -> Path:
     """Downloads OSM buildings footporints and roads as GeoJSON"""
     logger.info(f"Downloading OSM buildings for location {location} with radius {radius_meters}m to {output_path}")
     try:

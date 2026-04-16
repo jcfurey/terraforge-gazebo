@@ -78,8 +78,8 @@ def generate_world(ctx, latitude, longitude, radius, output_dir, world_name):
 
     # --- SDF World Generation ---
     logger.info("--- SDF World Generation ---")
-    template_directory = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'sdf_generation', 'templates') # Path to templates from cli/main.py
-    sdf_builder = sdf_builder.SDFWorldBuilder(template_directory)
+    template_directory = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'terraforge', 'data_processing', 'templates')
+    world_builder = sdf_builder.SDFWorldBuilder(template_directory)
 
     building_model_paths = [os.path.join(building_sdf_output_dir, f) for f in os.listdir(building_sdf_output_dir) if f.endswith('.sdf')] if os.path.exists(building_sdf_output_dir) else []
 
@@ -114,19 +114,14 @@ def generate_world(ctx, latitude, longitude, radius, output_dir, world_name):
         shutil.copy2(texture_path_processed, output_texture_file_in_media)
         texture_path_for_sdf = os.path.relpath(output_texture_file_in_media, os.path.dirname(output_sdf_world_path))
 
-    material_script_path = os.path.join(template_directory, 'gazebo.material') # Assuming material template is in the same template dir
-    output_material_script_path = os.path.join(output_scripts_dir, 'gazebo.material')
-    if os.path.exists(material_script_path):
-        shutil.copy2(material_script_path, output_material_script_path)
-
     try:
-        sdf_content = sdf_builder.render_world_template(
+        sdf_content = world_builder.render_world_template(
             heightmap_path=heightmap_output_path,
             texture_path=texture_path_for_sdf,
             building_model_paths=building_model_paths,
             building_poses=building_poses_gazebo
         )
-        sdf_builder.save_sdf_world_file(sdf_content, output_sdf_world_path)
+        world_builder.save_sdf_world_file(sdf_content, output_sdf_world_path)
         logger.info(f"World generation complete. SDF world file saved to: {output_sdf_world_path}")
     except Exception as e:
         logger.error(f"SDF world generation failed: {e}")

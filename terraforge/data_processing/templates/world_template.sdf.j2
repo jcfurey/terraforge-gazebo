@@ -1,8 +1,25 @@
 <?xml version='1.0'?>
-<sdf version='1.7'>
+<sdf version='1.10'>
   <world name='generated_world'>
+
+    <physics name='1ms' type='ignored'>
+      <max_step_size>0.001</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+    </physics>
+
+    <plugin filename='gz-sim-physics-system'
+            name='gz::sim::systems::Physics'/>
+    <plugin filename='gz-sim-user-commands-system'
+            name='gz::sim::systems::UserCommands'/>
+    <plugin filename='gz-sim-scene-broadcaster-system'
+            name='gz::sim::systems::SceneBroadcaster'/>
+    <plugin filename='gz-sim-sensors-system'
+            name='gz::sim::systems::Sensors'>
+      <render_engine>ogre2</render_engine>
+    </plugin>
+
     <light name='sun' type='directional'>
-      <cast_shadows>1</cast_shadows>
+      <cast_shadows>true</cast_shadows>
       <pose>0 0 10 0 0 0</pose>
       <diffuse>0.8 0.8 0.8 1</diffuse>
       <specular>0.2 0.2 0.2 1</specular>
@@ -21,12 +38,6 @@
       <shadows>true</shadows>
     </scene>
 
-    <physics type='ode'>
-      <real_time_update_rate>1000</real_time_update_rate>
-      <max_step_size>0.001</max_step_size>
-      <gravity>0 0 -9.8</gravity>
-    </physics>
-
     <model name='ground_plane'>
       <static>true</static>
       <link name='link'>
@@ -43,14 +54,7 @@
                 <mu>100</mu>
                 <mu2>50</mu2>
               </ode>
-              <torsque>
-                <ode/>
-              </torsque>
             </friction>
-            <bounce/>
-            <contact>
-              <ode/>
-            </contact>
           </surface>
         </collision>
         <visual name='visual'>
@@ -70,7 +74,6 @@
       </link>
     </model>
 
-    <!-- Terrain Heightmap -->
     {% if heightmap_path %}
     <model name='terrain'>
       <static>true</static>
@@ -79,7 +82,7 @@
           <geometry>
             <heightmap>
               <uri>file://{{ heightmap_path }}</uri>
-              <size>1000 1000 200</size> <!-- Adjust size and height as needed -->
+              <size>1000 1000 200</size>
               <pos>0 0 0</pos>
             </heightmap>
           </geometry>
@@ -88,27 +91,26 @@
           <geometry>
             <heightmap>
               <uri>file://{{ heightmap_path }}</uri>
-              <size>1000 1000 200</size> <!-- Adjust size and height as needed, same as collision -->
+              <size>1000 1000 200</size>
               <pos>0 0 0</pos>
+              {% if texture_path %}
+              <texture>
+                <size>1000</size>
+                <diffuse>file://{{ texture_path }}</diffuse>
+                <normal>file://{{ texture_path }}</normal>
+              </texture>
+              {% endif %}
             </heightmap>
           </geometry>
-          {% if texture_path %}
-          <material>
-            <script>
-              <uri>__materials__/scripts/gazebo.material</uri>
-              <name>Gazebo/SatelliteTexture</name>
-            </script>
-          </material>
-          {% endif %}
         </visual>
       </link>
-      <pose>0 0 0 0 0 0</pose> <!-- Terrain pose, adjust if needed -->
+      <pose>0 0 0 0 0 0</pose>
     </model>
     {% endif %}
 
-    <!-- Building Models -->
     {% for building_model_path in building_model_paths %}
-    <include filename='{{ building_model_path }}'>
+    <include>
+      <uri>file://{{ building_model_path }}</uri>
       <pose>{% if building_poses and loop.index0 < building_poses|length %}{{ building_poses[loop.index0][0] }} {{ building_poses[loop.index0][1] }} 0 0 0 0{% else %}0 0 0 0 0 0{% endif %}</pose>
     </include>
     {% endfor %}

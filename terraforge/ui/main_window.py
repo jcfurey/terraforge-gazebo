@@ -7,12 +7,12 @@ from PyQt6.QtWidgets import QMainWindow, QFileDialog, QMessageBox, QApplication
 from PyQt6.uic import loadUi
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtCore import pyqtSlot, QThread, pyqtSignal, QUrl
-from utils.config import config
-from utils.logging import setup_logger
-from utils.coordinates import CoordinateConverter
-from data_acquisition import elevation, osm, textures
-from data_processing import elevation_processor, building_processor, texture_processor
-from data_processing.sdf_builder import SDFWorldBuilder
+from terraforge.utils.config import config
+from terraforge.utils.logging import setup_logger
+from terraforge.utils.coordinates import CoordinateConverter
+from terraforge.data_acquisition import elevation, osm, textures
+from terraforge.data_processing import elevation_processor, building_processor, texture_processor
+from terraforge.data_processing.sdf_builder import SDFWorldBuilder
 import shutil
 import json
 import shapely.geometry
@@ -84,7 +84,10 @@ class WorldGeneratorThread(QThread):
 
         # --- SDF World Generation ---
         self.generation_progress.emit("Starting SDF World Generation...")
-        template_directory = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'sdf_generation', 'templates')
+        template_directory = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            'data_processing', 'templates',
+        )
         sdf_builder = SDFWorldBuilder(template_directory)
 
         building_model_paths = [os.path.join(building_sdf_output_dir, f) for f in os.listdir(building_sdf_output_dir) if f.endswith('.sdf')] if os.path.exists(building_sdf_output_dir) else []
@@ -116,12 +119,6 @@ class WorldGeneratorThread(QThread):
         if os.path.exists(texture_path_processed):
             shutil.copy2(texture_path_processed, output_texture_file_in_media)
             texture_path_for_sdf = os.path.relpath(output_texture_file_in_media, os.path.dirname(output_sdf_world_path))
-
-        template_directory = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'sdf_generation', 'templates')
-        material_script_path = os.path.join(template_directory, 'gazebo.material')
-        output_material_script_path = os.path.join(output_scripts_dir, 'gazebo.material')
-        if os.path.exists(material_script_path):
-            shutil.copy2(material_script_path, output_material_script_path)
 
         try:
             sdf_content = sdf_builder.render_world_template(

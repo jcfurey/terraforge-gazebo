@@ -1,7 +1,7 @@
 
 import os
 import shutil
-from utils.logging import logger
+from terraforge.utils.logging import logger
 
 def process_satellite_texture(texture_dir: str, output_texture_path: str):
     """

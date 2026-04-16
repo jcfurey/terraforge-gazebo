@@ -1,7 +1,7 @@
 
 from pyproj import Transformer
 import pyproj
-from utils.logging import logger
+from terraforge.utils.logging import logger
 
 
 class CoordinateConverter:

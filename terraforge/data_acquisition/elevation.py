@@ -3,8 +3,8 @@ import os
 import pyproj
 from pyproj import Transformer
 from shapely.geometry import box
-from utils.config import config
-from utils.logging import logger
+from terraforge.utils.config import config
+from terraforge.utils.logging import logger
 
 def download_dem(location: tuple, radius_meters: float, output_path: str):
 	"""

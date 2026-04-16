@@ -2,9 +2,9 @@ import os
 import requests
 from PIL import Image
 from io import BytesIO
-from utils.config import config
-from utils.logging import logger
-from data_acquisition.elevation import _calculate_bounds_wgs84
+from terraforge.utils.config import config
+from terraforge.utils.logging import logger
+from terraforge.data_acquisition.elevation import _calculate_bounds_wgs84
 
 MAPBOX_STYLE = "satellite-v9"
 MAPBOX_ZOOM_LEVEL = 15

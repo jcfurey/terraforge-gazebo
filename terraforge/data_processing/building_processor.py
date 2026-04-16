@@ -3,7 +3,7 @@ import os
 import json
 import shapely.geometry
 
-from utils.logging import logger
+from terraforge.utils.logging import logger
 
 DEFAULT_BUILDING_HEIGHT = 10.0
 
@@ -44,7 +44,7 @@ def process_osm_buildings_to_sdf(osm_filepath: str, output_sdf_dir: str):
                 size_z = float(height)
 
                 sdf_content = f"""<?xml version='1.0'?>
-<sdf version='1.7'>
+<sdf version='1.10'>
   <model name='{building_name.replace(" ", "_")}'>
     <static>true</static>
     <pose>{center_x} {center_y} {size_z/2.0} 0 0 0</pose> <!-- Position at centroid, base at Z=0 -->

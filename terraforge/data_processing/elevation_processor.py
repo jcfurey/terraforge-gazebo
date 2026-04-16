@@ -1,6 +1,6 @@
 import os
 from osgeo import gdal
-from utils.logging import logger
+from terraforge.utils.logging import logger
 
 def process_dem_to_heightmap(dem_filepath: str, output_heightmap_path: str):
     logger.info(f"Processing DEM {dem_filepath} to heightmap {output_heightmap_path}")
