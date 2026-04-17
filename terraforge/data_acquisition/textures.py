@@ -1,3 +1,4 @@
+import math
 import os
 import requests
 from PIL import Image
@@ -7,7 +8,29 @@ from terraforge.utils.logging import logger
 from terraforge.data_acquisition.elevation import _calculate_bounds_wgs84
 
 MAPBOX_STYLE = "satellite-v9"
-MAPBOX_ZOOM_LEVEL = 15
+DEFAULT_MAPBOX_ZOOM = 15
+MAX_TILES = 64
+
+
+def _pick_zoom(bbox_wgs84, max_tiles=MAX_TILES, default_zoom=DEFAULT_MAPBOX_ZOOM):
+    """Choose the highest zoom whose tile count for bbox stays under max_tiles."""
+    west, south, east, north = bbox_wgs84
+    for zoom in range(default_zoom, 0, -1):
+        tl = _deg2num(north, west, zoom)
+        br = _deg2num(south, east, zoom)
+        tiles = (br[0] - tl[0] + 1) * (br[1] - tl[1] + 1)
+        if tiles <= max_tiles:
+            return zoom, tiles
+    return 1, 1
+
+
+def _deg2num(lat_deg, lon_deg, zoom):
+    lat_rad = math.radians(lat_deg)
+    n = 2.0 ** zoom
+    xtile = int((lon_deg + 180.0) / 360.0 * n)
+    ytile = int((1.0 - math.log(math.tan(lat_rad) + 1 / math.cos(lat_rad)) / math.pi) / 2.0 * n)
+    return (xtile, ytile)
+
 
 def download_satellite_texture_tiles(location: tuple, radius_meters: float, output_dir: str, mapbox_api_key: str = None):
 	"""
@@ -22,26 +45,21 @@ def download_satellite_texture_tiles(location: tuple, radius_meters: float, outp
 	logger.info(f"Downloading satellite texture tiles for location {location} with radius {radius_meters}m to {output_dir}")
 	if mapbox_api_key is None:
 		mapbox_api_key = config.MAPBOX_API_KEY
-		if not mapbox_api_key:
-			logger.warning("Mapbox API key not provided in function argument or configuration. Using public access (may be limited).")
+	if not mapbox_api_key:
+		raise RuntimeError(
+			"Mapbox API key not set. Pass `mapbox_api_key=` or export MAPBOX_API_KEY."
+		)
 
 	bbox_wgs84 = _calculate_bounds_wgs84(location, radius_meters) # (west, south, east, north)
 	west, south, east, north = bbox_wgs84
 
 	tile_size = 256 # Mapbox tile size is 256x256 pixels
 
-	# Calculate tile coordinates (rough approximation for simplicity, consider more precise tile calculations for production)
-	def deg2num(lat_deg, lon_deg, zoom):
-		lat_rad = lat_deg * (3.141592653589793 / 180.0)
-		n = 2.0 ** zoom
-		xtile = int((lon_deg + 180.0) / 360.0 * n)
-		ytile = int((1.0 - math.log(math.tan(lat_rad) + 1 / math.cos(lat_rad)) / 3.141592653589793) / 2.0 * n)
-		return (xtile, ytile)
+	zoom, tile_count = _pick_zoom(bbox_wgs84)
+	logger.info(f"Selected Mapbox zoom {zoom} ({tile_count} tiles) for radius {radius_meters}m")
 
-	import math
-
-	top_left_tile = deg2num(north, west, MAPBOX_ZOOM_LEVEL)
-	bottom_right_tile = deg2num(south, east, MAPBOX_ZOOM_LEVEL)
+	top_left_tile = _deg2num(north, west, zoom)
+	bottom_right_tile = _deg2num(south, east, zoom)
 
 	tiles_x = range(top_left_tile[0], bottom_right_tile[0] + 1)
 	tiles_y = range(top_left_tile[1], bottom_right_tile[1] + 1)
@@ -50,7 +68,7 @@ def download_satellite_texture_tiles(location: tuple, radius_meters: float, outp
 
 	for x_tile in tiles_x:
 		for y_tile in tiles_y:
-			tile_url = f"https://api.mapbox.com/styles/v1/mapbox/{MAPBOX_STYLE}/tiles/{MAPBOX_ZOOM_LEVEL}/{x_tile}/{y_tile}?access_token={mapbox_api_key if mapbox_api_key else 'public'}"
+			tile_url = f"https://api.mapbox.com/styles/v1/mapbox/{MAPBOX_STYLE}/tiles/{zoom}/{x_tile}/{y_tile}?access_token={mapbox_api_key}"
 			try:
 				response = requests.get(tile_url, stream=True)
 				response.raise_for_status()

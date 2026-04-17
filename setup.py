@@ -5,7 +5,7 @@ package_name = 'terraforge_gazebo'
 setup(
     name=package_name,
     version='0.1.0',
-    packages=find_packages(exclude=['test', 'test.*']),
+    packages=find_packages(exclude=['test', 'test.*', 'experimental', 'experimental.*']),
     package_data={
         'terraforge.data_processing': ['templates/*.j2'],
     },

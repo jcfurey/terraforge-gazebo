@@ -1,0 +1,43 @@
+name: ROS 2 CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+
+jobs:
+  colcon:
+    runs-on: ubuntu-24.04
+    container:
+      image: ros:jazzy-ros-base
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: src/terraforge_gazebo
+
+      - name: Install apt dependencies
+        run: |
+          apt-get update
+          rosdep update
+          rosdep install --from-paths src --ignore-src -y \
+              || apt-get install -y python3-gdal python3-pyqt6
+
+      - name: Install pip-only dependencies
+        run: |
+          python3 -m pip install --break-system-packages \
+              -r src/terraforge_gazebo/requirements.txt
+
+      - name: Build
+        shell: bash
+        run: |
+          . /opt/ros/jazzy/setup.bash
+          colcon build --packages-select terraforge_gazebo
+
+      - name: Test
+        shell: bash
+        run: |
+          . /opt/ros/jazzy/setup.bash
+          . install/setup.bash
+          colcon test --packages-select terraforge_gazebo --event-handlers console_direct+
+          colcon test-result --verbose

@@ -20,10 +20,10 @@ def process_satellite_texture(texture_dir: str, output_texture_path: str):
 
         shutil.copy2(input_texture_file, output_texture_path)
 
-        logger.info(f"Satellite texture coped to {output_texture_path}")
+        logger.info(f"Satellite texture copied to {output_texture_path}")
     except FileNotFoundError as e:
         logger.error(f"Texture processing failed: {e}")
         raise
     except Exception as e:
-        logger.error(f"Error processing statellite texture: {e}")
+        logger.error(f"Error processing satellite texture: {e}")
         raise
