@@ -9,15 +9,20 @@ class SDFWorldBuilder:
         self.template_env = Environment(loader=FileSystemLoader(template_dir))
         logger.info(f"SDF World Builder initialized with template directory: {template_dir}")
 
-    def render_world_template(self, *, heightmap_path=None, texture_path=None, buildings=None,
-                              extent_meters=1000.0, height_amplitude=200.0):
+    def render_world_template(self, *, heightmap_path=None, texture_path=None,
+                              buildings=None, trees=None, roads=None,
+                              extent_meters=1000.0, height_amplitude=200.0,
+                              terrain_z_offset=0.0):
         template = self.template_env.get_template('world_template.sdf.j2')
         rendered_sdf = template.render(
             heightmap_path=heightmap_path,
             texture_path=texture_path,
             buildings=buildings or [],
+            trees=trees or [],
+            roads=roads or [],
             extent_meters=extent_meters,
             height_amplitude=height_amplitude,
+            terrain_z_offset=terrain_z_offset,
         )
         logger.info("SDF world template rendered.")
         return rendered_sdf

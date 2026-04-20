@@ -7,8 +7,21 @@
       <real_time_factor>1.0</real_time_factor>
     </physics>
 
+    <!-- Physics engine: bullet-featherstone (NOT gazebo's default dartsim).
+         Rationale: dartsim does not implement SDF <heightmap> collision nor
+         <polyline> collision, which forced a flat ground-plane hack and
+         disabled road collision. bullet-featherstone supports both natively,
+         so the rover can actually drive on terrain and interact with roads /
+         building outlines. Ships with gz-physics-7 on ROS 2 Jazzy (the
+         `libgz-physics-bullet-featherstone-plugin.so` symlink in
+         `ros-jazzy-gz-physics-vendor`). The <filename> value must be the
+         library basename without `lib` prefix or `.so` suffix. -->
     <plugin filename='gz-sim-physics-system'
-            name='gz::sim::systems::Physics'/>
+            name='gz::sim::systems::Physics'>
+      <engine>
+        <filename>gz-physics-bullet-featherstone-plugin</filename>
+      </engine>
+    </plugin>
     <plugin filename='gz-sim-user-commands-system'
             name='gz::sim::systems::UserCommands'/>
     <plugin filename='gz-sim-scene-broadcaster-system'
@@ -17,6 +30,16 @@
             name='gz::sim::systems::Sensors'>
       <render_engine>ogre2</render_engine>
     </plugin>
+    <!-- IMU system: populates the LinearAcceleration / AngularVelocity
+         components that sensors (incl. gz_sensors_ouster's synthesised IMU)
+         read. Without this, a static rover's IMU reports 0 m/s² on all axes
+         instead of +9.81 on Z, and Madgwick flags 'IMU in free fall'. -->
+    <plugin filename='gz-sim-imu-system'
+            name='gz::sim::systems::Imu'/>
+    <!-- Contact system: populates contact-sensor topics. Matches the standard
+         plugin set used by the bundled SubT/warehouse worlds. -->
+    <plugin filename='gz-sim-contact-system'
+            name='gz::sim::systems::Contact'/>
 
     <light name='sun' type='directional'>
       <cast_shadows>true</cast_shadows>
@@ -38,7 +61,13 @@
       <shadows>true</shadows>
     </scene>
 
-    {% if not heightmap_path %}
+    <!-- Flat collision plane — always emitted.
+         Gazebo's dartsim physics engine cannot build collision from an SDF
+         <heightmap> (see gz-sim issue tracker). Without a fallback plane the
+         robot falls through the terrain. The heightmap below is visual-only
+         on dartsim; for true terrain-following physics switch the engine to
+         bullet-featherstone. When no heightmap is present this plane also
+         carries the visual. -->
     <model name='ground_plane'>
       <static>true</static>
       <link name='link'>
@@ -58,6 +87,7 @@
             </friction>
           </surface>
         </collision>
+        {% if not heightmap_path %}
         <visual name='visual'>
           <cast_shadows>false</cast_shadows>
           <geometry>
@@ -72,11 +102,15 @@
             <specular>0.8 0.8 0.8 1</specular>
           </material>
         </visual>
+        {% endif %}
       </link>
     </model>
-    {% endif %}
 
     {% if heightmap_path %}
+    <!-- Terrain. <pos> is shifted by terrain_z_offset so the DEM elevation at
+         the origin (lat/lon center) corresponds to sim z=0. Without this the
+         SDF heightmap's minimum elevation maps to z=0, burying everything near
+         the origin under ~half the relief. -->
     <model name='terrain'>
       <static>true</static>
       <link name='link'>
@@ -85,7 +119,7 @@
             <heightmap>
               <uri>file://{{ heightmap_path }}</uri>
               <size>{{ extent_meters }} {{ extent_meters }} {{ height_amplitude }}</size>
-              <pos>0 0 0</pos>
+              <pos>0 0 {{ terrain_z_offset }}</pos>
             </heightmap>
           </geometry>
         </collision>
@@ -94,7 +128,7 @@
             <heightmap>
               <uri>file://{{ heightmap_path }}</uri>
               <size>{{ extent_meters }} {{ extent_meters }} {{ height_amplitude }}</size>
-              <pos>0 0 0</pos>
+              <pos>0 0 {{ terrain_z_offset }}</pos>
               {% if texture_path %}
               <texture>
                 <size>{{ extent_meters }}</size>
@@ -112,8 +146,26 @@
 
     {% for building in buildings %}
     <include>
+      <name>{{ building.model_name }}</name>
       <uri>model://{{ building.model_name }}</uri>
-      <pose>{{ building.pose_xy[0] }} {{ building.pose_xy[1] }} 0 0 0 0</pose>
+      <pose>{{ building.pose_xy[0] }} {{ building.pose_xy[1] }} {{ building.pose_z | default(0) }} 0 0 0</pose>
+    </include>
+    {% endfor %}
+
+    {% for road in roads %}
+    <include>
+      <name>{{ road.model_name }}</name>
+      <uri>model://{{ road.model_name }}</uri>
+      <pose>{{ road.pose_xy[0] }} {{ road.pose_xy[1] }} {{ road.pose_z | default(0) }} 0 0 0</pose>
+    </include>
+    {% endfor %}
+
+    {% for tree in trees %}
+    <!-- tree placements reuse shared tree_generic_N models (<name> unique) -->
+    <include>
+      <name>tree_{{ loop.index }}</name>
+      <uri>model://{{ tree.model_name }}</uri>
+      <pose>{{ tree.pose_xy[0] }} {{ tree.pose_xy[1] }} {{ tree.pose_z | default(0) }} 0 0 0</pose>
     </include>
     {% endfor %}
 

@@ -2,6 +2,7 @@
 import json
 import os
 
+import shapely.affinity
 import shapely.geometry
 import shapely.ops
 
@@ -9,15 +10,36 @@ from terraforge.utils.coordinates import CoordinateConverter
 from terraforge.utils.logging import logger
 
 DEFAULT_BUILDING_HEIGHT = 10.0
+LEVEL_HEIGHT_M = 3.0  # floor-to-floor height used when OSM gives building:levels
 
 
 def _sanitize(name):
     return str(name).replace(':', '_').replace('/', '_').replace(' ', '_')
 
 
+def _infer_height(props: dict) -> float:
+    """Derive a plausible building height from OSM tags.
+
+    Priority:
+      1. ``height`` (explicit meters, may include 'm')
+      2. ``building:levels`` * LEVEL_HEIGHT_M
+      3. DEFAULT_BUILDING_HEIGHT
+    """
+    if 'height' in props:
+        try:
+            return float(str(props['height']).rstrip(' m'))
+        except (TypeError, ValueError):
+            pass
+    if 'building:levels' in props:
+        try:
+            return max(float(props['building:levels']), 1.0) * LEVEL_HEIGHT_M
+        except (TypeError, ValueError):
+            pass
+    return DEFAULT_BUILDING_HEIGHT
+
+
 def _write_model_config(model_dir, model_name):
-    config_path = os.path.join(model_dir, 'model.config')
-    with open(config_path, 'w') as f:
+    with open(os.path.join(model_dir, 'model.config'), 'w') as f:
         f.write(f"""<?xml version='1.0'?>
 <model>
   <name>{model_name}</name>
@@ -28,16 +50,110 @@ def _write_model_config(model_dir, model_name):
 """)
 
 
-def process_osm_buildings_to_sdf(osm_filepath: str, models_dir: str, origin_wgs84: tuple):
+def _polygon_to_polyline_sdf(polygon, height: float, color=(0.7, 0.7, 0.7)) -> str:
+    """Render a shapely Polygon as an SDF visual polyline extrusion + bbox collision.
+
+    dartsim does not support <polyline> as a collision geometry (only box,
+    sphere, cylinder, capsule, mesh, plane). We therefore keep the polyline as
+    a *visual* for accurate footprint rendering and use an axis-aligned bbox
+    for collision — the rover collides with a conservative hull of the
+    building, but no per-run silent collision-build failures.
+    """
+    # If it's not a simple Polygon we can express with <polyline>, fall back to bbox-only.
+    if polygon.geom_type != 'Polygon' or not polygon.is_valid or not polygon.is_simple:
+        return _polygon_to_box_sdf(polygon, height, color)
+
+    # SDF <polyline> winding must be CCW for the extrusion normal to point up.
+    if not polygon.exterior.is_ccw:
+        polygon = shapely.geometry.polygon.orient(polygon, sign=1.0)
+
+    coords = list(polygon.exterior.coords)
+    if coords[0] == coords[-1]:
+        coords = coords[:-1]
+    pts = "\n            ".join(f"<point>{x:.3f} {y:.3f}</point>" for x, y in coords)
+
+    minx, miny, maxx, maxy = polygon.bounds
+    box_x = max(maxx - minx, 0.1)
+    box_y = max(maxy - miny, 0.1)
+    box_cx = (minx + maxx) / 2.0
+    box_cy = (miny + maxy) / 2.0
+
+    r, g, b = color
+    return f"""    <static>true</static>
+    <link name='link'>
+      <collision name='collision'>
+        <pose>{box_cx:.3f} {box_cy:.3f} {height / 2.0:.3f} 0 0 0</pose>
+        <geometry><box><size>{box_x:.3f} {box_y:.3f} {height:.3f}</size></box></geometry>
+      </collision>
+      <visual name='visual'>
+        <geometry>
+          <polyline>
+            {pts}
+            <height>{height:.3f}</height>
+          </polyline>
+        </geometry>
+        <material>
+          <ambient>{r} {g} {b} 1</ambient>
+          <diffuse>{r} {g} {b} 1</diffuse>
+          <specular>0.1 0.1 0.1 1</specular>
+        </material>
+      </visual>
+    </link>"""
+
+
+def _polygon_to_box_sdf(polygon, height: float, color=(0.7, 0.7, 0.7)) -> str:
+    """Axis-aligned bounding-box fallback for tricky footprints."""
+    minx, miny, maxx, maxy = polygon.bounds
+    size_x = max(maxx - minx, 0.1)
+    size_y = max(maxy - miny, 0.1)
+    r, g, b = color
+    return f"""    <static>true</static>
+    <pose>0 0 {height / 2.0} 0 0 0</pose>
+    <link name='link'>
+      <collision name='collision'>
+        <geometry><box><size>{size_x} {size_y} {height}</size></box></geometry>
+      </collision>
+      <visual name='visual'>
+        <geometry><box><size>{size_x} {size_y} {height}</size></box></geometry>
+        <material>
+          <ambient>{r} {g} {b} 1</ambient>
+          <diffuse>{r} {g} {b} 1</diffuse>
+          <specular>0.1 0.1 0.1 1</specular>
+        </material>
+      </visual>
+    </link>"""
+
+
+_BUILDING_COLORS = {
+    'residential': (0.75, 0.70, 0.60),
+    'apartments':  (0.70, 0.65, 0.55),
+    'commercial':  (0.65, 0.65, 0.75),
+    'industrial':  (0.55, 0.55, 0.55),
+    'warehouse':   (0.60, 0.55, 0.50),
+    'church':      (0.85, 0.80, 0.70),
+    'school':      (0.80, 0.75, 0.65),
+    'garage':      (0.50, 0.50, 0.50),
+}
+
+
+def _building_color(props: dict) -> tuple:
+    b = str(props.get('building', '')).lower()
+    return _BUILDING_COLORS.get(b, (0.72, 0.72, 0.72))
+
+
+def process_osm_buildings_to_sdf(osm_filepath: str, models_dir: str, origin_wgs84: tuple,
+                                 elevation_sampler=None, cloud_mask=None):
     """
     Process OSM building footprints from a GeoJSON file and write one Gazebo
-    model per building under ``models_dir`` using the standard
-    ``<models_dir>/<model_name>/{model.sdf,model.config}`` layout. Geometry is
-    expressed in the local Gazebo frame whose origin is ``origin_wgs84``
-    (lat, lon).
+    model per building under ``models_dir``. The footprint polygon is preserved
+    via SDF ``<polyline>`` when possible; self-intersecting or multipart
+    polygons fall back to an axis-aligned bounding box.
 
-    Returns a list of ``{'model_name': str, 'pose_xy': (x, y)}`` dicts — one
-    per generated building — so callers can emit ``model://<name>`` includes.
+    ``elevation_sampler(gx, gy) -> z_meters`` optionally provides terrain Z at
+    the building footprint so the model sits on the ground instead of floating
+    at z=0.
+
+    Returns ``[{'model_name': str, 'pose_xy': (x, y), 'pose_z': z}, ...]``.
     """
     logger.info(f"Processing OSM buildings from {osm_filepath} to models in {models_dir}")
     os.makedirs(models_dir, exist_ok=True)
@@ -49,64 +165,70 @@ def process_osm_buildings_to_sdf(osm_filepath: str, models_dir: str, origin_wgs8
         return (gx, gy) if z is None else (gx, gy, z)
 
     buildings = []
+    if not os.path.exists(osm_filepath):
+        logger.info("No OSM buildings file; skipping buildings stage.")
+        return buildings
     try:
         with open(osm_filepath, 'r') as f:
             osm_data = json.load(f)
+        polyline_count = 0
+        bbox_fallback = 0
 
+        cloud_skipped = 0
         for feature_idx, feature in enumerate(osm_data['features']):
             geom_type = feature['geometry']['type']
             if geom_type not in ('Polygon', 'MultiPolygon'):
-                logger.warning(
-                    f"Feature {feature_idx} is {geom_type}, not a building polygon. Skipping."
-                )
                 continue
 
             props = feature['properties']
             building_id = props.get('osmid', f"{feature_idx}")
-            height = float(props.get('height', DEFAULT_BUILDING_HEIGHT))
+            height = _infer_height(props)
+            color = _building_color(props)
 
             polygon_wgs84 = shapely.geometry.shape(feature['geometry'])
+            # Skip buildings whose centroid falls under a cloud in the
+            # satellite mosaic — we can't visually verify the footprint.
+            if cloud_mask is not None:
+                c = polygon_wgs84.centroid
+                if cloud_mask.is_cloudy(c.y, c.x):
+                    cloud_skipped += 1
+                    continue
             polygon_local = shapely.ops.transform(project, polygon_wgs84)
-
-            minx, miny, maxx, maxy = polygon_local.bounds
-            size_x = max(maxx - minx, 0.1)
-            size_y = max(maxy - miny, 0.1)
-            size_z = height
 
             centroid_local = polygon_local.centroid
             pose_xy = (centroid_local.x, centroid_local.y)
+
+            # Re-center the polygon on the model's own origin so the <include>
+            # pose places it correctly in the world.
+            polygon_centered = shapely.affinity.translate(
+                polygon_local, xoff=-pose_xy[0], yoff=-pose_xy[1]
+            )
+
+            # Place the building's base at the LOWEST terrain point under its
+            # footprint — stops buildings on slopes from floating on one side.
+            if elevation_sampler is not None:
+                samples = [
+                    elevation_sampler(x + pose_xy[0], y + pose_xy[1])
+                    for x, y in list(polygon_centered.exterior.coords)[:8]
+                ]
+                pose_z = min(samples) if samples else 0.0
+            else:
+                pose_z = 0.0
 
             model_name = f"building_{_sanitize(building_id)}_{feature_idx}"
             model_dir = os.path.join(models_dir, model_name)
             os.makedirs(model_dir, exist_ok=True)
 
+            body_sdf = _polygon_to_polyline_sdf(polygon_centered, height, color)
+            if '<polyline>' in body_sdf:
+                polyline_count += 1
+            else:
+                bbox_fallback += 1
+
             sdf_content = f"""<?xml version='1.0'?>
 <sdf version='1.10'>
   <model name='{model_name}'>
-    <static>true</static>
-    <pose>0 0 {size_z / 2.0} 0 0 0</pose>
-    <link name='link'>
-      <collision name='collision'>
-        <geometry>
-          <box>
-            <size>{size_x} {size_y} {size_z}</size>
-          </box>
-        </geometry>
-      </collision>
-      <visual name='visual'>
-        <geometry>
-          <box>
-            <size>{size_x} {size_y} {size_z}</size>
-          </box>
-        </geometry>
-        <material>
-          <ambient>0.7 0.7 0.7 1</ambient>
-          <diffuse>0.7 0.7 0.7 1</diffuse>
-          <specular>0.1 0.1 0.1 1</specular>
-          <emissive>0 0 0 1</emissive>
-        </material>
-      </visual>
-    </link>
+{body_sdf}
   </model>
 </sdf>
 """
@@ -114,10 +236,13 @@ def process_osm_buildings_to_sdf(osm_filepath: str, models_dir: str, origin_wgs8
                 f.write(sdf_content)
             _write_model_config(model_dir, model_name)
 
-            buildings.append({'model_name': model_name, 'pose_xy': pose_xy})
-            logger.debug(f"Generated model {model_name} in {model_dir}")
+            buildings.append({'model_name': model_name, 'pose_xy': pose_xy, 'pose_z': pose_z})
 
-        logger.info(f"OSM buildings processed: {len(buildings)} models in {models_dir}")
+        logger.info(
+            f"OSM buildings processed: {len(buildings)} models "
+            f"({polyline_count} polyline, {bbox_fallback} bbox-fallback, "
+            f"{cloud_skipped} cloud-masked) in {models_dir}"
+        )
         return buildings
     except Exception as e:
         logger.error(f"Error processing OSM buildings to SDF models: {e}")

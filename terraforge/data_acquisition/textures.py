@@ -170,6 +170,19 @@ def _deg2num(lat_deg, lon_deg, zoom):
     return (xtile, ytile)
 
 
+def _deg2pixel(lat_deg, lon_deg, zoom, tile_size=256):
+    """Continuous (sub-tile) global pixel coord for a given lat/lon. Used to
+    crop the merged tile mosaic to the exact requested bbox in pixel space."""
+    lat_rad = math.radians(lat_deg)
+    n = 2.0 ** zoom
+    x_pixel = (lon_deg + 180.0) / 360.0 * n * tile_size
+    y_pixel = (
+        (1.0 - math.log(math.tan(lat_rad) + 1 / math.cos(lat_rad)) / math.pi) / 2.0
+        * n * tile_size
+    )
+    return x_pixel, y_pixel
+
+
 def download_satellite_texture_tiles(
     location: tuple,
     radius_meters: float,
@@ -259,8 +272,31 @@ def download_satellite_texture_tiles(
             except Exception as e:
                 logger.error(f"Error processing tile {x_tile}_{y_tile}: {e}")
 
+    # Crop the merged mosaic to the EXACT requested bbox in pixel space.
+    # Tile indices snap to the tile grid (always >= the bbox), so the raw
+    # mosaic covers slightly more geography than requested. Without this crop
+    # Gazebo's <heightmap><texture><size> stretches the larger image onto the
+    # smaller terrain extent, visually shifting the texture relative to
+    # correctly-placed building/tree poses (which are computed from WGS84->UTM
+    # with zero slack).
+    tile_origin_px = (tiles_x[0] * tile_size, tiles_y[0] * tile_size)
+    tl_px = _deg2pixel(north, west, zoom, tile_size)
+    br_px = _deg2pixel(south, east, zoom, tile_size)
+    crop_box = (
+        max(int(round(tl_px[0] - tile_origin_px[0])), 0),
+        max(int(round(tl_px[1] - tile_origin_px[1])), 0),
+        min(int(round(br_px[0] - tile_origin_px[0])), merged_image.width),
+        min(int(round(br_px[1] - tile_origin_px[1])), merged_image.height),
+    )
+    cropped = merged_image.crop(crop_box)
+    logger.info(
+        f"Cropped mosaic to user bbox: "
+        f"mosaic={merged_image.size} -> crop={cropped.size} "
+        f"({crop_box[2] - crop_box[0]}x{crop_box[3] - crop_box[1]} px)"
+    )
+
     output_texture_path = os.path.join(output_dir, "satellite_texture.png")
-    merged_image.save(output_texture_path)
+    cropped.save(output_texture_path)
     logger.info(
         f"Merged satellite texture saved to {output_texture_path} "
         f"(attribution: {p.attribution})"
