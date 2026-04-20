@@ -138,6 +138,7 @@ def run_generate_world(
         trees_cache_path, output_models_dir, origin_location,
         elevation_sampler=sample_terrain_z,
         cloud_mask=cloud_mask,
+        world_half_extent_m=radius,
     )
     if with_roads:
         _log("Laying down roads from OSM highways...")

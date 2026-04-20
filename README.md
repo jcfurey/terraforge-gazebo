@@ -9,7 +9,7 @@
   <img src="https://github.com/r3tr056/terraforge-gazebo/blob/master/.github/images/banner.png?raw=true" alt="TerraForge Gazebo">
 </p>
 
-Generate Gazebo Harmonic simulation worlds from real-world geospatial data. TerraForge downloads DEM elevation, OpenStreetMap building footprints, and Mapbox satellite tiles for a given lat/lon/radius, then emits a colcon-installable `ros2 launch`-able `.world` file.
+Generate Gazebo Harmonic simulation worlds from real-world geospatial data. TerraForge downloads a DEM, OpenStreetMap features (buildings, foliage, optional roads), and satellite-tile imagery for a given lat/lon/radius, then emits a colcon-installable `ros2 launch`-able `.world` file with a matching `models/` + `media/` tree.
 
 ## Status
 
@@ -19,10 +19,15 @@ Beta. Packaged as an **ament_python** ROS 2 package called `terraforge_gazebo`, 
 
 - **CLI and GUI**: generate worlds from the command line or from a small PyQt6 UI.
 - **Real-world data**:
-  - SRTM DEM via the `elevation` PyPI package -> 16-bit PNG heightmap.
-  - OSM building footprints via `osmnx` -> per-building Gazebo models in local metric coordinates.
-  - Mapbox satellite tiles -> PBR diffuse texture on the terrain.
+  - SRTM DEM via the `elevation` PyPI package → 16-bit PNG heightmap, resampled to Ogre2-valid `2^n+1` dimensions, vertically shifted so the world origin sits at real ground elevation.
+  - OSM **buildings** via `osmnx` → per-building Gazebo models with SDF `<polyline>` footprint visuals + bbox collisions, height inferred from OSM tags, color by `building=*` category, base Z sampled from the DEM so buildings sit on slopes.
+  - OSM **foliage** (`natural=tree`, `natural=wood`, `landuse=forest`) → trunk-cylinder + sphere-canopy tree instances, scattered inside forest polygons at a reproducible seeded density (clipped to the world bbox, capped at 200).
+  - OSM **roads** *(opt-in, `--with-roads`)* → `highway=*` LineStrings buffered by per-class width into flat asphalt polyline ribbons.
+  - **Cloud masking** on the satellite imagery — drops asset placements whose pixel looks cloud-like (high luminance + low saturation + morphological opening to dismiss small false-positive blobs like bright rooftops).
+- **Seven satellite tile providers** with a registry (`esri`, `sentinel2`, `usgs_naip`, `gibs_bluemarble`, `mapbox`, `maptiler`, `bing`). Esri is the recommended keyless default. Mosaics are precision-cropped to the exact user bbox before saving.
+- **Strict UTM coordinate handling** — bbox math and asset placement use the local UTM zone (EPSG:326XX / 327XX), not Web Mercator, so feature positions match the textured terrain to within pyproj precision at any latitude.
 - **Portable output**: each generated world ships with its own `models/` and `media/` subdirectories, loaded via `GZ_SIM_RESOURCE_PATH`.
+- **Physics-ready SDF template**: loads `bullet-featherstone`, the IMU + Contact systems, and a flat collision ground plane (since neither dartsim nor bullet-featherstone supports SDF heightmap collision). Workspace rovers drive on flat ground while the heightmap renders visually.
 - **ROS 2 integration**: a `spawn_world.launch.py` that wraps `ros_gz_sim`'s `gz_sim.launch.py`.
 
 ## Use inside a ROS 2 Jazzy workspace
@@ -87,18 +92,18 @@ terraforge-gui
 <output-dir>/
 ├── <world-name>.world
 ├── models/
-│   ├── building_<osmid>_0/
-│   │   ├── model.sdf
-│   │   └── model.config
-│   └── ...
+│   ├── building_<osmid>_N/     (one per OSM building feature)
+│   ├── tree_generic_0..4/      (5 reusable tree variants, <include>d many times)
+│   └── road_<osmid>_N/         (only when --with-roads)
 └── media/
-    ├── heightmap.png
+    ├── heightmap.png           (16-bit, 2^n+1 sized)
+    ├── cloud_mask.png          (debug: white = pixel was cloud-masked)
     └── materials/
         └── textures/
             └── satellite_texture.png
 ```
 
-The launch file prepends `<output-dir>/models` to `GZ_SIM_RESOURCE_PATH` so `<include><uri>model://building_...</uri></include>` resolves.
+The launch file prepends `<output-dir>/models` to `GZ_SIM_RESOURCE_PATH` so `<include><uri>model://building_...</uri></include>` (and the tree / road includes) resolve.
 
 ## Configuration
 
@@ -131,12 +136,23 @@ Attribution is emitted as a log line per generation run; include it when publish
 
 ## Modules
 
-- `terraforge.cli` - `click`-based CLI, exposes `run_generate_world()` for programmatic use (e.g. from the GUI).
-- `terraforge.data_acquisition` - DEM, OSM, Mapbox downloaders.
-- `terraforge.data_processing` - DEM -> PNG, OSM -> SDF models, texture prep, Jinja SDF world template.
-- `terraforge.utils.coordinates` - WGS84 <-> UTM <-> local-Gazebo conversions.
-- `terraforge.ui.main_window` - PyQt6 GUI.
-- `experimental/ui/` - Custom PyQt map/GL widgets. Not currently wired into the main GUI; kept for future map-preview work.
+- `terraforge.cli` — `click`-based CLI. Exposes `run_generate_world()` for programmatic use (e.g. from the GUI or a wrapper script). Flags: `--tile-provider`, `--tile-api-key`, `--height-amplitude`, `--with-roads` / `--no-roads`, `--cloud-filter` / `--no-cloud-filter`.
+- `terraforge.data_acquisition`
+  - `elevation.py` — SRTM DEM download + **UTM-correct** WGS84 bbox calculation.
+  - `osm.py` — buildings / foliage / roads downloaders (all `osmnx.features_from_bbox`).
+  - `textures.py` — 7-provider tile registry, mosaic merge, exact-bbox crop.
+- `terraforge.data_processing`
+  - `elevation_processor.py` — DEM → normalized + Ogre2-resampled PNG; exposes `sample_dem_elevation(lat, lon)`.
+  - `building_processor.py` — OSM polygons → per-building SDF models with polyline visuals + bbox collisions.
+  - `tree_processor.py` — 5 reusable tree variants + forest-polygon scatter; clipped to world bbox.
+  - `road_processor.py` — OSM LineStrings → polyline ribbons (visual-only).
+  - `cloud_mask.py` — HLS-based cloud detection with morphological opening + per-(lat, lon) lookup.
+  - `texture_processor.py` — copies the cropped mosaic into `media/materials/textures/`.
+  - `sdf_builder.py` — Jinja SDF world template renderer.
+  - `templates/world_template.sdf.j2` — the SDF skeleton (physics engine, lighting, terrain, buildings, trees, roads, collision ground-plane).
+- `terraforge.utils.coordinates` — WGS84 ↔ UTM ↔ local-Gazebo converter (local UTM zone derived from origin longitude, not Web Mercator).
+- `terraforge.ui.main_window` — PyQt6 GUI.
+- `experimental/ui/` — Custom PyQt map/GL widgets. Not wired into the main GUI; kept for future map-preview work.
 
 ## License
 

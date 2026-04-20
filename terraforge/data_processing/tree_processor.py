@@ -119,6 +119,7 @@ def _scatter_in_polygon(polygon, density, max_count, rng):
 
 def process_osm_trees_to_sdf(osm_filepath: str, models_dir: str, origin_wgs84: tuple,
                              elevation_sampler=None, cloud_mask=None,
+                             world_half_extent_m: float = None,
                              seed: int = 1337) -> list:
     """Return a list of ``{model_name, pose_xy, pose_z}`` tree placements.
 
@@ -146,9 +147,26 @@ def process_osm_trees_to_sdf(osm_filepath: str, models_dir: str, origin_wgs84: t
     point_count = 0
     poly_count = 0
     cloud_skipped = 0
+    out_of_world_skipped = 0
+
+    # Clip forest polygons to this square so trees from a large natural=wood
+    # feature don't scatter far outside the terrain's extent. Point trees
+    # (natural=tree) get a separate per-point bounds check.
+    world_box = None
+    if world_half_extent_m is not None and world_half_extent_m > 0:
+        world_box = shapely.geometry.box(
+            -world_half_extent_m, -world_half_extent_m,
+            world_half_extent_m, world_half_extent_m,
+        )
 
     with open(osm_filepath) as f:
         osm_data = json.load(f)
+
+    def in_world(x, y):
+        if world_half_extent_m is None:
+            return True
+        return (-world_half_extent_m <= x <= world_half_extent_m and
+                -world_half_extent_m <= y <= world_half_extent_m)
 
     def tree_is_cloudy(gx, gy):
         if cloud_mask is None:
@@ -157,7 +175,10 @@ def process_osm_trees_to_sdf(osm_filepath: str, models_dir: str, origin_wgs84: t
         return cloud_mask.is_cloudy(lat, lon)
 
     def add_tree(x, y):
-        nonlocal cloud_skipped
+        nonlocal cloud_skipped, out_of_world_skipped
+        if not in_world(x, y):
+            out_of_world_skipped += 1
+            return
         if tree_is_cloudy(x, y):
             cloud_skipped += 1
             return
@@ -188,6 +209,13 @@ def process_osm_trees_to_sdf(osm_filepath: str, models_dir: str, origin_wgs84: t
             polygon_local = shapely.ops.transform(project, polygon_wgs84)
             if not polygon_local.is_valid or polygon_local.area <= 0:
                 continue
+            # OSM returns the feature's full geometry (which can span km beyond
+            # the user's bbox). Clip to the world square so scattered trees
+            # can't land outside the terrain mesh.
+            if world_box is not None:
+                polygon_local = polygon_local.intersection(world_box)
+                if polygon_local.is_empty or polygon_local.area <= 0:
+                    continue
             pts = _scatter_in_polygon(
                 polygon_local, FOREST_DENSITY, forest_tree_budget, rng
             )
@@ -199,6 +227,7 @@ def process_osm_trees_to_sdf(osm_filepath: str, models_dir: str, origin_wgs84: t
     logger.info(
         f"OSM foliage processed: {len(placements)} trees "
         f"({point_count} mapped, {poly_count} forest polygons, "
-        f"{cloud_skipped} cloud-masked) across {len(variant_names)} model variants"
+        f"{cloud_skipped} cloud-masked, {out_of_world_skipped} outside-world) "
+        f"across {len(variant_names)} model variants"
     )
     return placements

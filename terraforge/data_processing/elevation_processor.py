@@ -1,6 +1,25 @@
 import os
+
+import numpy as np
 from osgeo import gdal
+from PIL import Image
+
 from terraforge.utils.logging import logger
+
+# Ogre2's heightmap rendering requires the source PNG to have dimensions of
+# 2^n + 1 on each side (e.g. 65, 129, 257, 513, 1025). Otherwise the terrain
+# geometry fails to build and the world renders with no ground mesh at all
+# ("Heightmap final sampling must satisfy 2^n" + "Cannot attach a null
+# geometry object"). We resample the normalized DEM array to the next valid
+# size >= max(width, height), capped at 1025 for performance.
+_OGRE2_VALID_SIZES = (65, 129, 257, 513, 1025)
+
+
+def _next_ogre2_size(n: int) -> int:
+    for s in _OGRE2_VALID_SIZES:
+        if s >= n:
+            return s
+    return _OGRE2_VALID_SIZES[-1]
 
 
 def process_dem_to_heightmap(dem_filepath: str, output_heightmap_path: str) -> dict:
@@ -39,35 +58,25 @@ def process_dem_to_heightmap(dem_filepath: str, output_heightmap_path: str) -> d
         if max_val > min_val:
             normalized_array = (
                 (raster_array - min_val) / (max_val - min_val) * 65535
-            ).astype('uint16')
+            ).astype(np.uint16)
         else:
-            normalized_array = (raster_array - min_val).astype('uint16')
+            normalized_array = (raster_array - min_val).astype(np.uint16)
 
-        # PNG driver doesn't support Create(); use MEM then CreateCopy for 16-bit PNG.
-        mem_driver = gdal.GetDriverByName('MEM')
-        output_dataset = mem_driver.Create(
-            '', dem_dataset.RasterXSize, dem_dataset.RasterYSize, 1, gdal.GDT_UInt16,
-        )
-        if output_dataset is None:
-            raise Exception(f"Failed to create output heightmap file: {output_heightmap_path}")
+        src_h, src_w = normalized_array.shape
+        target = _next_ogre2_size(max(src_w, src_h))
 
-        output_band = output_dataset.GetRasterBand(1)
-        output_band.WriteArray(normalized_array)
+        # Resample to a square Ogre2-valid grid using bicubic interpolation.
+        # PIL handles uint16 images in mode 'I;16' (single-channel 16-bit).
+        src_img = Image.fromarray(normalized_array, mode='I;16')
+        resampled_img = src_img.resize((target, target), resample=Image.BICUBIC)
+        resampled_img.save(output_heightmap_path, format='PNG')
 
-        output_dataset.SetGeoTransform(dem_dataset.GetGeoTransform())
-        output_dataset.SetProjection(dem_dataset.GetProjection())
-        output_band.FlushCache()
-
-        png_driver = gdal.GetDriverByName('PNG')
-        png_dataset = png_driver.CreateCopy(output_heightmap_path, output_dataset, strict=0)
-
-        output_dataset = None
-        png_dataset = None
         dem_dataset = None
 
         logger.info(
             f"DEM processed: min={min_val:.1f}m max={max_val:.1f}m origin={origin_val:.1f}m. "
-            f"Heightmap saved to {output_heightmap_path}"
+            f"Heightmap resampled {src_w}x{src_h} -> {target}x{target} "
+            f"(Ogre2 2^n+1). Saved to {output_heightmap_path}"
         )
         return {'min': min_val, 'max': max_val, 'origin': origin_val}
     except Exception as e:
