@@ -20,6 +20,8 @@ class Config:
 
     EARTH_EXPLORER_API_KEY = os.getenv("EARTH_EXPLORER_API_KEY", "")
     MAPBOX_API_KEY = os.getenv("MAPBOX_API_KEY", "")
+    MAPTILER_API_KEY = os.getenv("MAPTILER_API_KEY", "")
+    BING_MAPS_API_KEY = os.getenv("BING_MAPS_API_KEY", "")
     SENTINEL_HUB_API_KEY = os.getenv("SENTINEL_HUB_API_KEY", "")
 
     def __init__(self):

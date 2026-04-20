@@ -45,13 +45,23 @@ pip install -r src/terraforge_gazebo/requirements.txt
 colcon build --packages-select terraforge_gazebo
 source install/setup.bash
 
-# Get a Mapbox token from https://account.mapbox.com/ and export it:
-export MAPBOX_API_KEY='pk.xxx'
+# Pick a satellite tile provider (see "Tile providers" below):
+#   keyless:  esri | sentinel2 | usgs_naip | gibs_bluemarble
+#   key req:  mapbox | maptiler | bing
+export SATELLITE_TEXTURE_SOURCE=esri       # or pass --tile-provider on the CLI
+# If you chose a key-required provider, also export its key, e.g.:
+#   export MAPBOX_API_KEY='pk.xxx'         # mapbox
+#   export MAPTILER_API_KEY='...'          # maptiler
+#   export BING_MAPS_API_KEY='...'         # bing
 
 # Generate a world for downtown San Francisco, 500 m radius
 terraforge generate-world \
     --latitude 37.7749 --longitude -122.4194 --radius 500 \
-    --output-dir /tmp/sf --world-name sf
+    --output-dir /tmp/sf --world-name sf \
+    --tile-provider esri
+
+# Enumerate available providers + their attribution requirements
+terraforge list-tile-providers
 
 # Launch it in Gazebo Harmonic
 ros2 launch terraforge_gazebo spawn_world.launch.py world:=/tmp/sf/sf.world
@@ -64,7 +74,7 @@ git clone https://github.com/r3tr056/terraforge-gazebo.git
 cd terraforge-gazebo
 pip install -r requirements.txt
 pip install -e .
-export MAPBOX_API_KEY='pk.xxx'
+export SATELLITE_TEXTURE_SOURCE=esri       # keyless default
 terraforge generate-world --latitude 37.7749 --longitude -122.4194 \
     --radius 500 --output-dir /tmp/sf --world-name sf
 # or launch the GUI
@@ -96,11 +106,28 @@ Environment variables:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `MAPBOX_API_KEY` | (required) | Mapbox access token for satellite tile downloads |
+| `SATELLITE_TEXTURE_SOURCE` | `mapbox` | Tile provider: `mapbox`, `esri`, `sentinel2`, `maptiler`, `bing`, `usgs_naip`, `gibs_bluemarble` |
+| `MAPBOX_API_KEY` | "" | Access token for `mapbox` provider |
+| `MAPTILER_API_KEY` | "" | Access token for `maptiler` provider |
+| `BING_MAPS_API_KEY` | "" | Access token for `bing` provider |
 | `TERRAFORGE_CACHE_DIR` | `$XDG_CACHE_HOME/terraforge` or `~/.cache/terraforge` | Cache root for DEM/OSM/texture downloads |
 | `TERRAFORGE_DEM_DIR` | `<cache-root>/dem` | Override DEM cache location |
 | `TERRAFORGE_OSM_DIR` | `<cache-root>/osm` | Override OSM cache location |
 | `TERRAFORGE_TEXTURE_DIR` | `<cache-root>/textures` | Override texture cache location |
+
+### Tile providers
+
+| Provider | Key? | Max zoom | Coverage | Notes |
+| --- | --- | --- | --- | --- |
+| `mapbox` | required | 22 | global | Original default; highest fidelity |
+| `esri` | no | 19 | global | Esri World Imagery; sub-meter in urban areas |
+| `sentinel2` | no | 18 | global | Sentinel-2 cloudless 2023 via EOX (CC BY 4.0); 10 m native res |
+| `maptiler` | required | 20 | global | Free tier ~100k tiles/mo |
+| `bing` | required | 19 | global | QuadKey scheme; free tier ~125k tiles/yr |
+| `usgs_naip` | no | 18 | US only | ~1 m aerial, public domain |
+| `gibs_bluemarble` | no | 8 | global | NASA GIBS BlueMarble; very low res, useful only for wide-area backdrops |
+
+Attribution is emitted as a log line per generation run; include it when publishing any resulting imagery.
 
 ## Modules
 

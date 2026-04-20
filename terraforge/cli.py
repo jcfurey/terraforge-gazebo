@@ -27,6 +27,8 @@ def run_generate_world(
     output_dir,
     world_name='generated_world',
     height_amplitude=200.0,
+    tile_provider=None,
+    tile_api_key=None,
     progress=None,
 ):
     """Run the full world-generation pipeline.
@@ -55,7 +57,8 @@ def run_generate_world(
     osm.download_osm_buildings(origin_location, radius, osm_cache_path)
     textures.download_satellite_texture_tiles(
         origin_location, radius, texture_cache_dir,
-        mapbox_api_key=config.MAPBOX_API_KEY,
+        provider=tile_provider,
+        api_key=tile_api_key,
     )
 
     output_models_dir = os.path.join(output_dir, 'models')
@@ -118,8 +121,15 @@ def cli(ctx, debug):
 @click.option('--world-name', default='generated_world', help='Name of the generated Gazebo world.')
 @click.option('--height-amplitude', default=200.0, type=float,
               help='Vertical range (m) mapped to the full heightmap dynamic range.')
+@click.option('--tile-provider',
+              type=click.Choice(sorted(textures.PROVIDERS.keys()), case_sensitive=False),
+              default=None,
+              help='Satellite tile source. Defaults to $SATELLITE_TEXTURE_SOURCE or "mapbox".')
+@click.option('--tile-api-key', default=None,
+              help='API key for the selected tile provider (overrides the provider-specific env var).')
 @click.pass_context
-def generate_world(ctx, latitude, longitude, radius, output_dir, world_name, height_amplitude):
+def generate_world(ctx, latitude, longitude, radius, output_dir, world_name,
+                   height_amplitude, tile_provider, tile_api_key):
     """Generate a Gazebo Harmonic SDF world for a given location and radius."""
     try:
         run_generate_world(
@@ -129,11 +139,22 @@ def generate_world(ctx, latitude, longitude, radius, output_dir, world_name, hei
             output_dir=output_dir,
             world_name=world_name,
             height_amplitude=height_amplitude,
+            tile_provider=tile_provider,
+            tile_api_key=tile_api_key,
         )
     except Exception as e:
         logger.error(f"World generation failed: {e}")
         if ctx.obj['DEBUG']:
             raise
+
+
+@cli.command('list-tile-providers')
+def list_tile_providers():
+    """List available satellite tile providers and their attribution requirements."""
+    for name in sorted(textures.PROVIDERS.keys()):
+        p = textures.PROVIDERS[name]
+        key_tag = "key required" if p.requires_key else "no key"
+        click.echo(f"{name:18}  max_zoom={p.max_zoom:<2}  [{key_tag}]  {p.attribution}")
 
 
 if __name__ == '__main__':
