@@ -49,17 +49,22 @@ DEFAULT_L_LOOSE = 0.55    # loose: could-be-cloud luminance (halo / haze)
 DEFAULT_S_LOOSE = 0.30    # loose: could-be-cloud saturation
 # Morphological opening radius applied to the STRICT seeds before dilation.
 # Kills building-sized false-positive seeds (bright concrete rooftops, ~5-10
-# px at zoom 15) so they can't seed an unwanted geodesic expansion.
+# px at the mask's working resolution) so they can't seed an unwanted geodesic
+# expansion.
 DEFAULT_OPENING_PX = 5
 # Bridge-severing opening applied AFTER the first geodesic reconstruction.
-# Thin connections (≤ this radius * 2 pixels wide) between the true cloud
-# region and nearby bright false positives (e.g. concrete roofs adjoining
-# the cloud's halo) are severed here. The subsequent second geodesic pass
-# then prunes away components no longer connected to a strict seed.
 DEFAULT_BRIDGE_OPENING_PX = 2
 # Final dilation applied AFTER both geodesic passes — captures the soft
 # outer halo of the cloud that's slightly outside the loose threshold.
 DEFAULT_DILATION_PX = 3
+# Target ground sampling distance (meters-per-pixel) for the cloud-mask
+# morphology pass. Pillow's MaxFilter / MinFilter are O(kernel² × pixels),
+# which blows up at z19 native resolution (0.3 m/px, 64 MP). A cloud is
+# hundreds of meters across, so ~5 m/px is plenty to detect one, and the
+# small pixel kernels above stay comparable across all zoom levels. If the
+# caller supplies a finer meters_per_pixel, we downsample the image to this
+# target before morphology; if it's already coarser, we leave it alone.
+DEFAULT_TARGET_MPP = 5.0
 # Cap on geodesic-dilation iterations. Each iteration grows the seed by
 # 2 px (5x5 max filter), so 50 iters reaches ~100 px from any seed —
 # plenty for a cloud spanning hundreds of pixels in a 500x500 mosaic.
@@ -94,6 +99,8 @@ class CloudMask:
         opening_px: int = DEFAULT_OPENING_PX,
         bridge_opening_px: int = DEFAULT_BRIDGE_OPENING_PX,
         dilation_px: int = DEFAULT_DILATION_PX,
+        meters_per_pixel: Optional[float] = None,
+        target_mpp: float = DEFAULT_TARGET_MPP,
     ):
         """Build a mask from a satellite PNG that has been precisely cropped
         to ``bbox_wgs84`` (north at image top, west at image left).
@@ -114,6 +121,23 @@ class CloudMask:
              loose threshold.
         """
         img = Image.open(image_path).convert("RGB")
+
+        # Downsample to target_mpp before morphology. At z19 native (0.25 m/px
+        # over a 2 km world = 8 k × 8 k = 64 MP), a 5 px Pillow opening kernel
+        # still takes several minutes. Running at 5 m/px (400 × 400) finishes
+        # in <1 s. A cloud spans hundreds of metres; 5 m detection cells are
+        # plenty, and the mask's only job is a binary yes/no per building.
+        if meters_per_pixel is not None and meters_per_pixel > 0 and target_mpp > meters_per_pixel:
+            factor = target_mpp / meters_per_pixel
+            new_w = max(2, int(round(img.size[0] / factor)))
+            new_h = max(2, int(round(img.size[1] / factor)))
+            logger.info(
+                f"Cloud mask: downsampling {img.size[0]}x{img.size[1]} "
+                f"({meters_per_pixel:.3f} m/px) -> {new_w}x{new_h} "
+                f"(~{target_mpp:.1f} m/px) for morphology"
+            )
+            img = img.resize((new_w, new_h), Image.BILINEAR)
+
         rgb = np.asarray(img, dtype=np.float32) / 255.0
         maxc = np.max(rgb, axis=-1)
         minc = np.min(rgb, axis=-1)

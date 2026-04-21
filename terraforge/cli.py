@@ -63,11 +63,15 @@ def run_generate_world(
     height_amplitude=None,
     tile_provider=None,
     tile_api_key=None,
+    tile_zoom=None,
+    tile_max_count=None,
     with_roads=False,
     cloud_filter=True,
     dem_file=None,
     texture_file=None,
     max_heightmap_size=1025,
+    performer_ref='rovermax',
+    disable_level_streaming=False,
     progress=None,
 ):
     """Run the full world-generation pipeline.
@@ -119,6 +123,12 @@ def run_generate_world(
     if with_roads:
         osm.download_osm_roads(origin_location, radius, roads_cache_path)
 
+    # Need the UTM CRS before the tile download so we can ask the downloader
+    # to reproject the merged mosaic from Web Mercator to UTM. Without this,
+    # the PNG's pixel grid doesn't align with the UTM-placed buildings/trees
+    # and you get cross-corner drift (NE aligned, SW off).
+    converter = CoordinateConverter(origin_location)
+
     if texture_file is not None:
         texture_user_path = os.path.abspath(texture_file)
         if not os.path.isfile(texture_user_path):
@@ -130,14 +140,13 @@ def run_generate_world(
             origin_location, radius, texture_cache_dir,
             provider=tile_provider,
             api_key=tile_api_key,
+            zoom=tile_zoom,
+            max_tiles=tile_max_count if tile_max_count is not None else textures.MAX_TILES,
+            utm_crs=converter.utm_crs_string,
         )
 
-    # Reproject the WGS84 DEM into a true meter-square UTM grid before any
-    # heightmap / elevation-sampling happens downstream. The converter is
-    # created here (not later) so both the reprojection and the per-point
-    # sampler share the same UTM zone.
-    converter = CoordinateConverter(origin_location)
-
+    # DEM reprojection uses the same converter created above, so both the
+    # texture and DEM share a single UTM zone.
     _log("Reprojecting DEM into local UTM grid...")
     target_size = _choose_heightmap_size(dem_source_path, max_size=max_heightmap_size)
     elevation.reproject_dem_to_utm(
@@ -206,7 +215,20 @@ def run_generate_world(
     cloud_mask = None
     if cloud_filter and os.path.exists(texture_cache_png):
         texture_bbox = _calculate_bounds_wgs84(origin_location, radius)
-        cloud_mask = cloud_mask_mod.build_cloud_mask(texture_cache_png, texture_bbox)
+        # Texture was reprojected to UTM, so pixels are truly meter-spaced.
+        # Let the mask scale its morphology kernels by meters-per-pixel so
+        # thresholds behave the same at any zoom level.
+        try:
+            from PIL import Image as _Img
+            with _Img.open(texture_cache_png) as _tex:
+                tex_w = _tex.size[0]
+            texture_meters_per_px = (2.0 * radius) / tex_w if tex_w > 0 else None
+        except Exception:
+            texture_meters_per_px = None
+        cloud_mask = cloud_mask_mod.build_cloud_mask(
+            texture_cache_png, texture_bbox,
+            meters_per_pixel=texture_meters_per_px,
+        )
 
     _log("Building Gazebo models from OSM footprints...")
     buildings = building_processor.process_osm_buildings_to_sdf(
@@ -214,12 +236,18 @@ def run_generate_world(
         elevation_sampler=sample_terrain_z,
         cloud_mask=cloud_mask,
     )
-    _log("Scattering trees from OSM foliage...")
+    _log("Scattering trees from OSM foliage + vegetation mask...")
     trees = tree_processor.process_osm_trees_to_sdf(
         trees_cache_path, output_models_dir, origin_location,
         elevation_sampler=sample_terrain_z,
         cloud_mask=cloud_mask,
         world_half_extent_m=radius,
+        # Image-based vegetation fill: scatter additional trees on green
+        # satellite pixels OSM didn't tag. Needs the UTM-reprojected texture
+        # (pixel grid == UTM meter grid) and the buildings geojson (exclude
+        # footprints so trunks don't land inside walls).
+        satellite_texture_path=texture_cache_png,
+        buildings_geojson_path=buildings_cache_path,
     )
     if with_roads:
         _log("Laying down roads from OSM highways...")
@@ -266,6 +294,8 @@ def run_generate_world(
         extent_meters=extent_meters,
         height_amplitude=height_amplitude,
         terrain_z_offset=terrain_z_offset,
+        performer_ref=performer_ref,
+        enable_level_streaming=not disable_level_streaming,
     )
     builder.save_sdf_world_file(sdf_content, output_sdf_world_path)
 
@@ -309,6 +339,15 @@ def cli(ctx, debug):
               help='Satellite tile source. Defaults to $SATELLITE_TEXTURE_SOURCE or "mapbox".')
 @click.option('--tile-api-key', default=None,
               help='API key for the selected tile provider (overrides the provider-specific env var).')
+@click.option('--zoom', 'tile_zoom', type=int, default=None,
+              help='Force satellite tile zoom level (clamped to provider.max_zoom). '
+                   'Without this, the pipeline picks the highest zoom that fits --max-tiles. '
+                   'Higher zoom = finer texture + more tiles + longer download. '
+                   'Esri/Bing cap at 19, MapTiler at 20, Mapbox at 22.')
+@click.option('--max-tiles', 'tile_max_count', type=int, default=None,
+              help='Cap on tile count per world (default 4096). Pipeline steps zoom down '
+                   'until the count fits. Raise if you want a 3 km+ world at zoom 19; '
+                   'lower if the tile server rate-limits.')
 @click.option('--with-roads/--no-roads', default=False,
               help='Emit OSM highway ways as flat road strips. Off by default — '
                    'current implementation is flat-per-segment and floats over undulating terrain.')
@@ -329,11 +368,21 @@ def cli(ctx, debug):
                    '1025, 2049, 4097 — all 2^n+1). Default 1025. Raise to 2049 or 4097 '
                    'to preserve sub-meter detail from aerial flyovers; each step quadruples '
                    'GPU memory and scene-update cost in Gazebo.')
+@click.option('--performer-ref', default='rovermax',
+              help='Top-level model name that the level-streaming <performer> follows. '
+                   'Set to match the name passed to ros_gz_sim::create when spawning the '
+                   'robot. Default "rovermax" matches this workspace\'s ROBOT_NAME.')
+@click.option('--disable-level-streaming', is_flag=True, default=False,
+              help='Emit tile compound models without <level>/<performer> streaming. '
+                   'Result: every tile is loaded at all times (faster to reach a valid '
+                   'scene if the performer never spawns; slower full-world loads). Keep '
+                   'streaming on for the 3090 + city-scale workflow.')
 @click.pass_context
 def generate_world(ctx, latitude, longitude, side_length, radius, output_dir,
                    world_name, height_amplitude, tile_provider, tile_api_key,
+                   tile_zoom, tile_max_count,
                    with_roads, cloud_filter, dem_file, texture_file,
-                   max_heightmap_size):
+                   max_heightmap_size, performer_ref, disable_level_streaming):
     """Generate a Gazebo Harmonic SDF world for a given location.
 
     Exactly one of ``--side-length`` (full side, preferred) or ``--radius``
@@ -361,11 +410,15 @@ def generate_world(ctx, latitude, longitude, side_length, radius, output_dir,
             height_amplitude=height_amplitude,
             tile_provider=tile_provider,
             tile_api_key=tile_api_key,
+            tile_zoom=tile_zoom,
+            tile_max_count=tile_max_count,
             with_roads=with_roads,
             cloud_filter=cloud_filter,
             dem_file=dem_file,
             texture_file=texture_file,
             max_heightmap_size=max_heightmap_size,
+            performer_ref=performer_ref,
+            disable_level_streaming=disable_level_streaming,
         )
     except Exception as e:
         logger.error(f"World generation failed: {e}")

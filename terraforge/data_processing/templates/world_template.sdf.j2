@@ -2,8 +2,12 @@
 <sdf version='1.10'>
   <world name='generated_world'>
 
-    <physics name='1ms' type='ignored'>
-      <max_step_size>0.001</max_step_size>
+    <!-- 4 ms step (250 Hz physics). 1 ms put gzserver at ~20% RTF on the
+         Vicksburg-scale world (370 static collisions + heightmap). 4 ms is
+         comfortable for bullet-featherstone on a ground vehicle and restores
+         RTF close to 1.0 without noticeably degrading wheel/contact fidelity. -->
+    <physics name='4ms' type='ignored'>
+      <max_step_size>0.004</max_step_size>
       <real_time_factor>1.0</real_time_factor>
     </physics>
 
@@ -41,8 +45,13 @@
     <plugin filename='gz-sim-contact-system'
             name='gz::sim::systems::Contact'/>
 
+    <!-- Shadows disabled globally. On a large world (100s of static models)
+         every shadow caster adds a depth-pass in the ogre2 renderer; turning
+         the sun's cast_shadows + scene-level <shadows> off typically buys
+         20-40% RTF with no perception impact (LiDAR / depth cams don't read
+         the shadow pass). Re-enable both for visual beauty-shots. -->
     <light name='sun' type='directional'>
-      <cast_shadows>true</cast_shadows>
+      <cast_shadows>false</cast_shadows>
       <pose>0 0 10 0 0 0</pose>
       <diffuse>0.8 0.8 0.8 1</diffuse>
       <specular>0.2 0.2 0.2 1</specular>
@@ -56,20 +65,41 @@
     </light>
 
     <scene>
-      <ambient>0.4 0.4 0.4 1</ambient>
-      <background>0.7 0.7 0.7 1</background>
-      <shadows>true</shadows>
+      <!-- gz-sim Harmonic's <sky> element is flaky on our setup (hangs the
+           GUI render thread when clouds are enabled), so skip it and just
+           paint a sky-blue background. -->
+      <ambient>0.5 0.5 0.5 1</ambient>
+      <background>0.5 0.7 1.0 1</background>
+      <shadows>false</shadows>
+      <!-- "Fog of war" atmospheric haze. Colour matches the sky so distant
+           tiles blend out naturally. linear fog is cheap (1 per-pixel math
+           op) and hides the sharp edge where the static scene ends or where
+           level-streamed tiles would pop in. Tune <start>/<end> to push the
+           visible horizon in or out; they're in world metres. -->
+      <fog>
+        <type>linear</type>
+        <color>0.5 0.7 1.0 1</color>
+        <start>80</start>
+        <end>260</end>
+      </fog>
     </scene>
 
-    <!-- Flat collision plane — always emitted.
-         Gazebo's dartsim physics engine cannot build collision from an SDF
-         <heightmap> (see gz-sim issue tracker). Without a fallback plane the
-         robot falls through the terrain. The heightmap below is visual-only
-         on dartsim; for true terrain-following physics switch the engine to
-         bullet-featherstone. When no heightmap is present this plane also
-         carries the visual. -->
+    <!-- Flat collision plane — the ONLY collision surface in this world.
+         gz-sim's bullet-featherstone physics backend does NOT implement
+         AttachHeightmapShapeFeature, so any <heightmap> under <collision>
+         is silently dropped at world load with:
+           [Err] Unsupported collision geometry type [6] for Link [link]
+           [Dbg] Heightmaps will be ignored.
+         dartsim doesn't support heightmap collision either. The heightmap
+         is therefore a VISUAL-only surface — the rover drives on this
+         flat plane at z=0 while seeing the elevated terrain around it.
+         Buildings / trees float or sink relative to this plane based on
+         their DEM elevation; that's cosmetic and doesn't affect physics.
+         Upgrade path: pre-triangulate the heightmap to an STL and use
+         <mesh> collision instead (bullet-featherstone supports that). -->
     <model name='ground_plane'>
       <static>true</static>
+      <pose>0 0 0 0 0 0</pose>
       <link name='link'>
         <collision name='collision'>
           <geometry>
@@ -107,22 +137,20 @@
     </model>
 
     {% if heightmap_path %}
-    <!-- Terrain. <pos> is shifted by terrain_z_offset so the DEM elevation at
-         the origin (lat/lon center) corresponds to sim z=0. Without this the
-         SDF heightmap's minimum elevation maps to z=0, burying everything near
-         the origin under ~half the relief. -->
+    <!-- Terrain is VISUAL ONLY. No <collision> block: gz-sim's
+         bullet-featherstone and dartsim physics backends both reject
+         <heightmap> collision ("Unsupported collision geometry type [6]"
+         / "Heightmaps will be ignored"). The rover drives on the flat
+         <ground_plane> above instead; this model just renders the DEM
+         so the scene looks like real terrain.
+
+         <pos> is shifted by terrain_z_offset so the DEM elevation at
+         the origin (lat/lon center) corresponds to sim z=0; without it
+         the SDF heightmap's minimum elevation maps to z=0 and everything
+         near the origin gets buried under ~half the relief. -->
     <model name='terrain'>
       <static>true</static>
       <link name='link'>
-        <collision name='collision'>
-          <geometry>
-            <heightmap>
-              <uri>file://{{ heightmap_path }}</uri>
-              <size>{{ extent_meters }} {{ extent_meters }} {{ height_amplitude }}</size>
-              <pos>0 0 {{ terrain_z_offset }}</pos>
-            </heightmap>
-          </geometry>
-        </collision>
         <visual name='visual'>
           <geometry>
             <heightmap>
@@ -154,30 +182,35 @@
     </model>
     {% endif %}
 
-    {% for building in buildings %}
-    <include>
-      <name>{{ building.model_name }}</name>
-      <uri>model://{{ building.model_name }}</uri>
-      <pose>{{ building.pose_xy[0] }} {{ building.pose_xy[1] }} {{ building.pose_z | default(0) }} 0 0 0</pose>
-    </include>
+    <!-- ── Static scene as tiled compound models ─────────────────────────
+         All buildings, trees, and roads are bucketed into 200 m × 200 m
+         tile models, each containing the unique links that fall inside
+         its extent. When level streaming is on (below), only the tiles
+         near the rover get loaded. -->
+    {% for tile in scene_tiles %}
+{{ tile.model_sdf }}
     {% endfor %}
 
-    {% for road in roads %}
-    <include>
-      <name>{{ road.model_name }}</name>
-      <uri>model://{{ road.model_name }}</uri>
-      <pose>{{ road.pose_xy[0] }} {{ road.pose_xy[1] }} {{ road.pose_z | default(0) }} 0 0 0</pose>
-    </include>
-    {% endfor %}
-
-    {% for tree in trees %}
-    <!-- tree placements reuse shared tree_generic_N models (<name> unique) -->
-    <include>
-      <name>tree_{{ loop.index }}</name>
-      <uri>model://{{ tree.model_name }}</uri>
-      <pose>{{ tree.pose_xy[0] }} {{ tree.pose_xy[1] }} {{ tree.pose_z | default(0) }} 0 0 0</pose>
-    </include>
-    {% endfor %}
+    {% if enable_level_streaming %}
+    <!-- ── Tile streaming via custom plugin ──────────────────────────────
+         SDFormat's native <level>/<performer> tags only take effect in
+         distributed-simulation mode and are silently dropped by our
+         single-process launch. Instead, gz_tile_streamer::TileStreamer
+         watches the performer model's pose every tick and teleports
+         out-of-range tile_X_Y models to z={{ level_hidden_z }} m so they
+         fall out of the render + physics active set. Fog in <scene>
+         masks the activation boundary so tiles popping in at the edge
+         fade from haze into detail. Requires:
+             colcon build --packages-select gz_tile_streamer
+         and GZ_SIM_SYSTEM_PLUGIN_PATH must include install/lib. -->
+    <plugin filename='gz_tile_streamer' name='gz_tile_streamer::TileStreamer'>
+      <performer_model>{{ performer_ref }}</performer_model>
+      <tile_prefix>tile_</tile_prefix>
+      <active_radius_m>{{ level_active_radius_m }}</active_radius_m>
+      <hidden_z>{{ level_hidden_z }}</hidden_z>
+      <update_rate_hz>10</update_rate_hz>
+    </plugin>
+    {% endif %}
 
   </world>
 </sdf>

@@ -12,8 +12,11 @@ from terraforge.utils.logging import logger
 from terraforge.data_acquisition.elevation import _calculate_bounds_wgs84
 
 USER_AGENT = "terraforge_gazebo/0.1 (+https://github.com/r3tr056/terraforge-gazebo)"
-MAX_TILES = 64
-DEFAULT_ZOOM = 15
+# Upper bound on tile count per world. The pipeline steps zoom DOWN from the
+# provider's max until the count fits. Raised from 64 so city-scale worlds
+# (2-3 km) can still pull at zoom 18-19. At lat 32° with 2 km side length,
+# zoom 19 is ~1000 tiles, zoom 18 is ~250; 4096 leaves room for larger worlds.
+MAX_TILES = 4096
 
 
 @dataclass(frozen=True)
@@ -149,11 +152,22 @@ def _default_key_for(provider: str) -> str:
     return getattr(config, attr, "") or ""
 
 
-def _pick_zoom(bbox_wgs84, max_zoom, max_tiles=MAX_TILES):
-    """Choose the highest zoom whose tile count for the bbox stays under max_tiles."""
+def _pick_zoom(bbox_wgs84, max_zoom, max_tiles=MAX_TILES, forced_zoom=None):
+    """Pick the zoom level for the bbox.
+
+    If ``forced_zoom`` is set, use it (clamped to the provider's max_zoom)
+    and bypass the tile-count safety check — the caller owns the tradeoff.
+    Otherwise start from the provider's max_zoom and step DOWN until the
+    tile count fits under ``max_tiles``.
+    """
     west, south, east, north = bbox_wgs84
-    cap = min(max_zoom, DEFAULT_ZOOM)
-    for zoom in range(cap, 0, -1):
+    if forced_zoom is not None:
+        zoom = min(int(forced_zoom), max_zoom)
+        tl = _deg2num(north, west, zoom)
+        br = _deg2num(south, east, zoom)
+        tiles = (br[0] - tl[0] + 1) * (br[1] - tl[1] + 1)
+        return zoom, tiles
+    for zoom in range(max_zoom, 0, -1):
         tl = _deg2num(north, west, zoom)
         br = _deg2num(south, east, zoom)
         tiles = (br[0] - tl[0] + 1) * (br[1] - tl[1] + 1)
@@ -183,6 +197,99 @@ def _deg2pixel(lat_deg, lon_deg, zoom, tile_size=256):
     return x_pixel, y_pixel
 
 
+def _reproject_webmercator_to_utm(
+    src_png_path: str,
+    dst_png_path: str,
+    bbox_wgs84: tuple,
+    utm_crs: str,
+    radius_meters: float,
+    output_px: int,
+):
+    """Reproject a Web-Mercator-cropped PNG onto a true UTM meter-square grid.
+
+    The raw merged+cropped satellite PNG is sampled at Web Mercator pixel spacing —
+    its N-S extent per meter is 1/cos(lat) larger than E-W. When Gazebo stretches
+    that PNG uniformly over a flat UTM-square terrain, buildings drift the further
+    you get from wherever the two projections happened to agree.
+
+    Fix: stamp Web Mercator georef onto the source PNG, warp to UTM with exact
+    UTM-square bounds, write PNG. After this, 1 pixel == constant meters everywhere
+    and building positions align with the texture.
+
+    Args:
+        src_png_path:  Web-Mercator PNG, cropped to the WGS84 bbox derived from
+                       UTM corners (cx±r, cy±r).
+        dst_png_path:  output PNG in UTM.
+        bbox_wgs84:    (west, south, east, north), the source PNG's exact extent.
+        utm_crs:       target CRS string, e.g. "EPSG:32615".
+        radius_meters: half-extent (m) of the desired output UTM square.
+        output_px:     output pixel dimension (square).
+    """
+    from osgeo import gdal
+    from pyproj import Transformer
+
+    west, south, east, north = bbox_wgs84
+
+    # Source PNG bounds in Web Mercator meters.
+    wgs_to_merc = Transformer.from_crs("EPSG:4326", "EPSG:3857", always_xy=True)
+    ul_mx, ul_my = wgs_to_merc.transform(west, north)
+    lr_mx, lr_my = wgs_to_merc.transform(east, south)
+
+    # Target UTM square: WGS84 bbox was built as UTM_center ± r, so converting
+    # the WGS84 corners back to UTM recovers those exact coordinates.
+    wgs_to_utm = Transformer.from_crs("EPSG:4326", utm_crs, always_xy=True)
+    sw_ux, sw_uy = wgs_to_utm.transform(west, south)
+    ne_ux, ne_uy = wgs_to_utm.transform(east, north)
+
+    # VRT lets us stamp georef without touching pixel data or writing to disk.
+    vrt_path = "/vsimem/terraforge_wm_source.vrt"
+    tmp_tif = "/vsimem/terraforge_utm_warped.tif"
+    try:
+        vrt = gdal.Translate(
+            vrt_path,
+            src_png_path,
+            format="VRT",
+            outputSRS="EPSG:3857",
+            outputBounds=[ul_mx, ul_my, lr_mx, lr_my],  # [ulx, uly, lrx, lry]
+        )
+        if vrt is None:
+            raise RuntimeError(f"gdal.Translate failed for {src_png_path}")
+        vrt = None
+
+        # gdal.Warp's outputBounds is [minX, minY, maxX, maxY].
+        warped = gdal.Warp(
+            tmp_tif,
+            vrt_path,
+            format="GTiff",
+            dstSRS=utm_crs,
+            outputBounds=[sw_ux, sw_uy, ne_ux, ne_uy],
+            width=output_px,
+            height=output_px,
+            resampleAlg="bilinear",
+            multithread=True,
+        )
+        if warped is None:
+            raise RuntimeError("gdal.Warp failed")
+        warped = None
+
+        translated = gdal.Translate(dst_png_path, tmp_tif, format="PNG")
+        if translated is None:
+            raise RuntimeError("gdal.Translate to PNG failed")
+        translated = None
+    finally:
+        for p in (vrt_path, tmp_tif):
+            try:
+                gdal.Unlink(p)
+            except Exception:
+                pass
+
+    logger.info(
+        f"Reprojected texture: EPSG:3857 -> {utm_crs}, "
+        f"bounds=[{sw_ux:.1f}, {sw_uy:.1f}, {ne_ux:.1f}, {ne_uy:.1f}] UTM m "
+        f"({output_px}x{output_px} px, {(2*radius_meters)/output_px:.3f} m/px)"
+    )
+
+
 def download_satellite_texture_tiles(
     location: tuple,
     radius_meters: float,
@@ -191,6 +298,9 @@ def download_satellite_texture_tiles(
     api_key: Optional[str] = None,
     # Backwards-compat: older callers passed `mapbox_api_key=`.
     mapbox_api_key: Optional[str] = None,
+    zoom: Optional[int] = None,
+    max_tiles: int = MAX_TILES,
+    utm_crs: Optional[str] = None,
 ):
     """Download satellite texture tiles for a location/radius from the chosen provider.
 
@@ -202,6 +312,10 @@ def download_satellite_texture_tiles(
         api_key: API key for providers that require one. Defaults to the env var
             for the chosen provider (e.g. `MAPBOX_API_KEY` for `mapbox`).
         mapbox_api_key: legacy alias for `api_key` when `provider='mapbox'`.
+        utm_crs: if provided (e.g. "EPSG:32615"), the merged mosaic is reprojected
+            from Web Mercator to this UTM CRS after cropping, so the output PNG's
+            pixel grid matches the UTM terrain grid exactly. Without it the PNG
+            is left in Web Mercator and will drift against UTM-placed assets.
     """
     if provider is None:
         provider = (config.SATELLITE_TEXTURE_SOURCE or "mapbox").lower()
@@ -230,17 +344,47 @@ def download_satellite_texture_tiles(
     bbox_wgs84 = _calculate_bounds_wgs84(location, radius_meters)
     tile_size = 256
 
-    zoom, tile_count = _pick_zoom(bbox_wgs84, max_zoom=p.max_zoom)
+    zoom, tile_count = _pick_zoom(
+        bbox_wgs84, max_zoom=p.max_zoom, max_tiles=max_tiles, forced_zoom=zoom,
+    )
     logger.info(
         f"Selected zoom {zoom} ({tile_count} tiles) for radius {radius_meters}m "
-        f"(provider max_zoom={p.max_zoom})"
+        f"(provider max_zoom={p.max_zoom}, max_tiles={max_tiles})"
     )
+    if tile_count > 512:
+        logger.warning(
+            f"Pulling {tile_count} tiles at zoom {zoom} — expect a ~{tile_count * 0.1:.0f}s "
+            f"download and a {tile_count * tile_size * tile_size * 3 // (1024*1024)} MB "
+            f"uncropped mosaic. Drop --zoom if the tile server rate-limits."
+        )
 
     west, south, east, north = bbox_wgs84
     top_left_tile = _deg2num(north, west, zoom)
     bottom_right_tile = _deg2num(south, east, zoom)
     tiles_x = range(top_left_tile[0], bottom_right_tile[0] + 1)
     tiles_y = range(top_left_tile[1], bottom_right_tile[1] + 1)
+
+    # Cached final texture. Keyed by provider + zoom + projection so that
+    # toggling UTM reprojection or changing either input invalidates cleanly
+    # without clobbering caches from other runs.
+    proj_tag = "utm" if utm_crs else "wm"
+    cached_cropped_path = os.path.join(
+        output_dir, f"satellite_texture_{provider}_z{zoom}_{proj_tag}.png"
+    )
+    output_texture_path = os.path.join(output_dir, "satellite_texture.png")
+    if os.path.exists(cached_cropped_path):
+        logger.info(
+            f"Cache hit: reusing merged texture from {cached_cropped_path}"
+        )
+        # Copy into the canonical filename so downstream (cloud_mask,
+        # texture_processor) finds it at the same path regardless of zoom.
+        import shutil
+        shutil.copy2(cached_cropped_path, output_texture_path)
+        logger.info(
+            f"Merged satellite texture saved to {output_texture_path} "
+            f"(attribution: {p.attribution})"
+        )
+        return
 
     merged_image = Image.new(
         'RGB',
@@ -252,28 +396,41 @@ def download_satellite_texture_tiles(
 
     headers = {"User-Agent": USER_AGENT}
     failed_tiles = []
+    cache_hits = 0
+    fetched = 0
     for x_tile in tiles_x:
         for y_tile in tiles_y:
-            tile_url = p.tile_url(zoom, x_tile, y_tile, api_key)
+            # Tile filename includes provider + zoom so caches from
+            # different runs at the same (lat, lon, radius) don't stomp.
+            tile_filename = f"tile_{provider}_z{zoom}_{x_tile}_{y_tile}.png"
+            tile_output_path = os.path.join(output_dir, tile_filename)
             try:
-                response = requests.get(tile_url, headers=headers, stream=True, timeout=30)
-                response.raise_for_status()
-
-                tile_image = Image.open(BytesIO(response.content)).convert("RGB")
+                if os.path.exists(tile_output_path) and os.path.getsize(tile_output_path) > 0:
+                    tile_image = Image.open(tile_output_path).convert("RGB")
+                    cache_hits += 1
+                else:
+                    tile_url = p.tile_url(zoom, x_tile, y_tile, api_key)
+                    response = requests.get(tile_url, headers=headers, stream=True, timeout=30)
+                    response.raise_for_status()
+                    tile_image = Image.open(BytesIO(response.content)).convert("RGB")
+                    tile_image.save(tile_output_path)
+                    fetched += 1
+                    logger.debug(f"Downloaded tile {x_tile}_{y_tile} to {tile_output_path}")
                 x_offset = (x_tile - top_left_tile[0]) * tile_size
                 y_offset = (y_tile - top_left_tile[1]) * tile_size
                 merged_image.paste(tile_image, (x_offset, y_offset))
-
-                tile_filename = f"tile_{x_tile}_{y_tile}.png"
-                tile_output_path = os.path.join(output_dir, tile_filename)
-                tile_image.save(tile_output_path)
-                logger.debug(f"Downloaded tile {x_tile}_{y_tile} to {tile_output_path}")
             except requests.exceptions.RequestException as e:
                 logger.error(f"Error downloading tile {x_tile}_{y_tile}: {e}")
                 failed_tiles.append((x_tile, y_tile))
             except Exception as e:
                 logger.error(f"Error processing tile {x_tile}_{y_tile}: {e}")
                 failed_tiles.append((x_tile, y_tile))
+
+    total = cache_hits + fetched + len(failed_tiles)
+    logger.info(
+        f"Tiles: {cache_hits} cached, {fetched} downloaded, "
+        f"{len(failed_tiles)} failed (of {total})"
+    )
 
     # A blank PIL RGB canvas defaults to black, so swallowed failures would
     # leave silent black holes in the cropped texture. Abort instead of
@@ -311,8 +468,37 @@ def download_satellite_texture_tiles(
         f"({crop_box[2] - crop_box[0]}x{crop_box[3] - crop_box[1]} px)"
     )
 
-    output_texture_path = os.path.join(output_dir, "satellite_texture.png")
-    cropped.save(output_texture_path)
+    if utm_crs:
+        # Write the Web-Mercator-cropped mosaic to a staging file, then warp
+        # into a true UTM meter-square PNG. Side length matches the cropped
+        # input dimensions' geometric mean, so we neither over- nor under-
+        # sample the web-mercator grid significantly.
+        import math as _math
+        wm_staging_path = os.path.join(output_dir, f"satellite_texture_{provider}_z{zoom}_wm_staging.png")
+        cropped.save(wm_staging_path)
+        output_px = int(round(_math.sqrt(cropped.size[0] * cropped.size[1])))
+        _reproject_webmercator_to_utm(
+            src_png_path=wm_staging_path,
+            dst_png_path=output_texture_path,
+            bbox_wgs84=bbox_wgs84,
+            utm_crs=utm_crs,
+            radius_meters=radius_meters,
+            output_px=output_px,
+        )
+        # Cache the reprojected PNG; drop the Web-Mercator staging file.
+        import shutil
+        shutil.copy2(output_texture_path, cached_cropped_path)
+        try:
+            os.remove(wm_staging_path)
+        except OSError:
+            pass
+    else:
+        # No UTM CRS passed — save the Web-Mercator mosaic as-is. This path
+        # keeps legacy behaviour; callers who want aligned texture must pass
+        # utm_crs. The PNG will still look correct visually, just drift from
+        # building placements the further you are from the origin.
+        cropped.save(output_texture_path)
+        cropped.save(cached_cropped_path)
     logger.info(
         f"Merged satellite texture saved to {output_texture_path} "
         f"(attribution: {p.attribution})"
