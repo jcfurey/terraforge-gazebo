@@ -251,6 +251,7 @@ def download_satellite_texture_tiles(
     )
 
     headers = {"User-Agent": USER_AGENT}
+    failed_tiles = []
     for x_tile in tiles_x:
         for y_tile in tiles_y:
             tile_url = p.tile_url(zoom, x_tile, y_tile, api_key)
@@ -269,8 +270,23 @@ def download_satellite_texture_tiles(
                 logger.debug(f"Downloaded tile {x_tile}_{y_tile} to {tile_output_path}")
             except requests.exceptions.RequestException as e:
                 logger.error(f"Error downloading tile {x_tile}_{y_tile}: {e}")
+                failed_tiles.append((x_tile, y_tile))
             except Exception as e:
                 logger.error(f"Error processing tile {x_tile}_{y_tile}: {e}")
+                failed_tiles.append((x_tile, y_tile))
+
+    # A blank PIL RGB canvas defaults to black, so swallowed failures would
+    # leave silent black holes in the cropped texture. Abort instead of
+    # writing a corrupt mosaic — operator can re-run (the cache is reused).
+    if failed_tiles:
+        total = len(tiles_x) * len(tiles_y)
+        sample = ', '.join(f"{x}_{y}" for x, y in failed_tiles[:5])
+        more = f" (+{len(failed_tiles) - 5} more)" if len(failed_tiles) > 5 else ""
+        raise RuntimeError(
+            f"{len(failed_tiles)} of {total} satellite tiles failed to download "
+            f"from provider {provider!r}; aborting to avoid a corrupt mosaic. "
+            f"Failed tiles: {sample}{more}. Re-run to retry."
+        )
 
     # Crop the merged mosaic to the EXACT requested bbox in pixel space.
     # Tile indices snap to the tile grid (always >= the bbox), so the raw

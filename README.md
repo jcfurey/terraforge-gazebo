@@ -138,11 +138,11 @@ Attribution is emitted as a log line per generation run; include it when publish
 
 - `terraforge.cli` — `click`-based CLI. Exposes `run_generate_world()` for programmatic use (e.g. from the GUI or a wrapper script). Flags: `--tile-provider`, `--tile-api-key`, `--height-amplitude`, `--with-roads` / `--no-roads`, `--cloud-filter` / `--no-cloud-filter`.
 - `terraforge.data_acquisition`
-  - `elevation.py` — SRTM DEM download + **UTM-correct** WGS84 bbox calculation.
+  - `elevation.py` — SRTM DEM download, **UTM-correct** WGS84 bbox, and WGS84→UTM reprojection (`reproject_dem_to_utm`) onto a true meter-square Ogre2-valid grid.
   - `osm.py` — buildings / foliage / roads downloaders (all `osmnx.features_from_bbox`).
   - `textures.py` — 7-provider tile registry, mosaic merge, exact-bbox crop.
 - `terraforge.data_processing`
-  - `elevation_processor.py` — DEM → normalized + Ogre2-resampled PNG; exposes `sample_dem_elevation(lat, lon)`.
+  - `elevation_processor.py` — UTM DEM → normalized 16-bit PNG heightmap; exposes `sample_dem_elevation_utm(utm_x, utm_y)` and `next_ogre2_size(n)`.
   - `building_processor.py` — OSM polygons → per-building SDF models with polyline visuals + bbox collisions.
   - `tree_processor.py` — 5 reusable tree variants + forest-polygon scatter; clipped to world bbox.
   - `road_processor.py` — OSM LineStrings → polyline ribbons (visual-only).

@@ -2,6 +2,7 @@ import logging
 import os
 
 import click
+from osgeo import gdal
 
 from terraforge.data_acquisition import elevation, osm, textures
 from terraforge.data_acquisition.elevation import _calculate_bounds_wgs84
@@ -23,6 +24,26 @@ logger = setup_logger('terraforge')
 TEMPLATE_DIR = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), 'data_processing', 'templates'
 )
+
+
+def _choose_heightmap_size(wgs84_dem_path: str) -> int:
+    """Pick an Ogre2-valid heightmap size based on the native DEM resolution.
+
+    We round max(src_w, src_h) up to the next size in
+    ``_OGRE2_VALID_SIZES`` (65, 129, 257, 513, 1025). This preserves the
+    amount of real detail present in SRTM / user-supplied DEMs without
+    over-upsampling (which just smooths between real samples) or dropping
+    detail to fit a lower size.
+    """
+    ds = gdal.Open(wgs84_dem_path)
+    if ds is None:
+        raise RuntimeError(f"Failed to open DEM for sizing: {wgs84_dem_path}")
+    try:
+        src_w = ds.RasterXSize
+        src_h = ds.RasterYSize
+    finally:
+        ds = None
+    return elevation_processor.next_ogre2_size(max(src_w, src_h))
 
 
 def run_generate_world(
@@ -59,6 +80,7 @@ def run_generate_world(
     output_dir = os.path.abspath(output_dir)
 
     dem_cache_path = os.path.join(config.DEM_CACHE_DIR, f"{location_name}_dem.tif")
+    dem_utm_cache_path = os.path.join(config.DEM_CACHE_DIR, f"{location_name}_dem_utm.tif")
     buildings_cache_path = os.path.join(config.OSM_CACHE_DIR, f"{location_name}_buildings.geojson")
     trees_cache_path = os.path.join(config.OSM_CACHE_DIR, f"{location_name}_foliage.geojson")
     roads_cache_path = os.path.join(config.OSM_CACHE_DIR, f"{location_name}_roads.geojson")
@@ -77,6 +99,23 @@ def run_generate_world(
         api_key=tile_api_key,
     )
 
+    # Reproject the WGS84 DEM into a true meter-square UTM grid before any
+    # heightmap / elevation-sampling happens downstream. The converter is
+    # created here (not later) so both the reprojection and the per-point
+    # sampler share the same UTM zone.
+    converter = CoordinateConverter(origin_location)
+
+    _log("Reprojecting DEM into local UTM grid...")
+    target_size = _choose_heightmap_size(dem_cache_path)
+    elevation.reproject_dem_to_utm(
+        dem_cache_path,
+        dem_utm_cache_path,
+        origin_location,
+        radius,
+        pixel_count=target_size,
+        utm_crs=converter.utm_crs_string,
+    )
+
     output_models_dir = os.path.join(output_dir, 'models')
     output_media_dir = os.path.join(output_dir, 'media')
     output_textures_dir = os.path.join(output_media_dir, 'materials', 'textures')
@@ -89,7 +128,7 @@ def run_generate_world(
 
     _log("Processing DEM into heightmap...")
     dem_stats = elevation_processor.process_dem_to_heightmap(
-        dem_cache_path, heightmap_output_path
+        dem_utm_cache_path, heightmap_output_path
     )
 
     # Auto-pick height_amplitude from real DEM relief if caller didn't override.
@@ -108,14 +147,15 @@ def run_generate_world(
     origin_norm_z = (dem_stats['origin'] - dem_stats['min']) * z_per_meter
     terrain_z_offset = -origin_norm_z
 
-    # Per-building elevation lookup: convert local Gazebo XY -> WGS84 -> DEM
-    # pixel -> elevation -> normalized sim z (shifted by terrain_z_offset so
-    # it matches the terrain visual).
-    converter = CoordinateConverter(origin_location)
-
+    # Per-asset elevation lookup: convert Gazebo XY -> UTM -> DEM pixel ->
+    # elevation -> normalized sim z (shifted by terrain_z_offset so it
+    # matches the terrain visual). Staying in UTM all the way through
+    # guarantees the sample comes from the same grid Gazebo is rendering.
     def sample_terrain_z(gx, gy):
-        lat, lon = converter.gazebo_to_wgs84((gx, gy))
-        raw_elev = elevation_processor.sample_dem_elevation(dem_cache_path, lat, lon)
+        utm_x, utm_y = converter.gazebo_to_utm((gx, gy))
+        raw_elev = elevation_processor.sample_dem_elevation_utm(
+            dem_utm_cache_path, utm_x, utm_y
+        )
         return (raw_elev - dem_stats['min']) * z_per_meter + terrain_z_offset
 
     # Build a cloud mask from the cropped-to-exact-bbox satellite texture so
@@ -238,6 +278,7 @@ def generate_world(ctx, latitude, longitude, radius, output_dir, world_name,
         logger.error(f"World generation failed: {e}")
         if ctx.obj['DEBUG']:
             raise
+        ctx.exit(1)
 
 
 @cli.command('list-tile-providers')
