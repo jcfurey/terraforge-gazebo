@@ -3,6 +3,7 @@ import os
 
 import click
 from osgeo import gdal
+from PIL import Image
 
 from terraforge.data_acquisition import elevation, osm, textures
 from terraforge.data_acquisition.elevation import _calculate_bounds_wgs84
@@ -26,24 +27,31 @@ TEMPLATE_DIR = os.path.join(
 )
 
 
-def _choose_heightmap_size(wgs84_dem_path: str) -> int:
+def _choose_heightmap_size(src_dem_path: str, max_size: int) -> int:
     """Pick an Ogre2-valid heightmap size based on the native DEM resolution.
 
-    We round max(src_w, src_h) up to the next size in
-    ``_OGRE2_VALID_SIZES`` (65, 129, 257, 513, 1025). This preserves the
-    amount of real detail present in SRTM / user-supplied DEMs without
-    over-upsampling (which just smooths between real samples) or dropping
-    detail to fit a lower size.
+    Rounds max(src_w, src_h) up to the next valid size (65, 129, 257, 513,
+    1025, 2049, 4097), capped at ``max_size``. SRTM3 (~90 m/px) typically
+    lands at 65-257 over a few-km world; sub-meter LIDAR / aerial flyovers
+    over the same area can fill 2049 or 4097, but require the user to raise
+    the cap via --max-heightmap-size to avoid silently downsampling them.
     """
-    ds = gdal.Open(wgs84_dem_path)
+    ds = gdal.Open(src_dem_path)
     if ds is None:
-        raise RuntimeError(f"Failed to open DEM for sizing: {wgs84_dem_path}")
+        raise RuntimeError(f"Failed to open DEM for sizing: {src_dem_path}")
     try:
         src_w = ds.RasterXSize
         src_h = ds.RasterYSize
     finally:
         ds = None
-    return elevation_processor.next_ogre2_size(max(src_w, src_h))
+    chosen = elevation_processor.next_ogre2_size(max(src_w, src_h), max_size=max_size)
+    if max(src_w, src_h) > chosen:
+        logger.warning(
+            f"Source DEM is {src_w}x{src_h}; capping heightmap to "
+            f"{chosen}x{chosen} (raise --max-heightmap-size to preserve "
+            f"native resolution at the cost of GPU memory / load time)."
+        )
+    return chosen
 
 
 def run_generate_world(
@@ -57,6 +65,9 @@ def run_generate_world(
     tile_api_key=None,
     with_roads=False,
     cloud_filter=True,
+    dem_file=None,
+    texture_file=None,
+    max_heightmap_size=1025,
     progress=None,
 ):
     """Run the full world-generation pipeline.
@@ -87,17 +98,39 @@ def run_generate_world(
     texture_cache_dir = os.path.join(config.TEXTURE_CACHE_DIR, f"{location_name}_texture")
     os.makedirs(texture_cache_dir, exist_ok=True)
 
-    _log("Downloading DEM, OSM layers, and satellite tiles...")
-    elevation.download_dem(origin_location, radius, dem_cache_path)
+    # User-supplied DEM / orthophoto override the cache-fetch paths. Both must
+    # cover the (2R x 2R) meter bbox around the origin (gdal.Warp will clip /
+    # reproject to fit). For aerial flyovers, source CRS is auto-detected
+    # from the file's metadata — works for any CRS gdal can read (UTM, state
+    # plane, EPSG:4326, etc.).
+    dem_source_path = dem_cache_path
+    if dem_file is not None:
+        dem_source_path = os.path.abspath(dem_file)
+        if not os.path.isfile(dem_source_path):
+            raise click.UsageError(f"--dem-file does not exist: {dem_source_path}")
+        _log(f"Using user-supplied DEM: {dem_source_path}")
+    else:
+        _log("Downloading SRTM3 DEM...")
+        elevation.download_dem(origin_location, radius, dem_cache_path)
+
+    _log("Downloading OSM layers...")
     osm.download_osm_buildings(origin_location, radius, buildings_cache_path)
     osm.download_osm_trees(origin_location, radius, trees_cache_path)
     if with_roads:
         osm.download_osm_roads(origin_location, radius, roads_cache_path)
-    textures.download_satellite_texture_tiles(
-        origin_location, radius, texture_cache_dir,
-        provider=tile_provider,
-        api_key=tile_api_key,
-    )
+
+    if texture_file is not None:
+        texture_user_path = os.path.abspath(texture_file)
+        if not os.path.isfile(texture_user_path):
+            raise click.UsageError(f"--texture-file does not exist: {texture_user_path}")
+        _log(f"Using user-supplied orthophoto: {texture_user_path}")
+    else:
+        _log("Downloading satellite tiles...")
+        textures.download_satellite_texture_tiles(
+            origin_location, radius, texture_cache_dir,
+            provider=tile_provider,
+            api_key=tile_api_key,
+        )
 
     # Reproject the WGS84 DEM into a true meter-square UTM grid before any
     # heightmap / elevation-sampling happens downstream. The converter is
@@ -106,9 +139,9 @@ def run_generate_world(
     converter = CoordinateConverter(origin_location)
 
     _log("Reprojecting DEM into local UTM grid...")
-    target_size = _choose_heightmap_size(dem_cache_path)
+    target_size = _choose_heightmap_size(dem_source_path, max_size=max_heightmap_size)
     elevation.reproject_dem_to_utm(
-        dem_cache_path,
+        dem_source_path,
         dem_utm_cache_path,
         origin_location,
         radius,
@@ -123,7 +156,13 @@ def run_generate_world(
     os.makedirs(output_textures_dir, exist_ok=True)
 
     heightmap_output_path = os.path.join(output_media_dir, 'heightmap.png')
-    texture_cache_png = os.path.join(texture_cache_dir, 'satellite_texture.png')
+    # texture_source_path is what the cloud-mask + texture-copy steps read.
+    # It's either the user-supplied orthophoto or the downloaded-tile mosaic.
+    if texture_file is not None:
+        texture_source_path = os.path.abspath(texture_file)
+    else:
+        texture_source_path = os.path.join(texture_cache_dir, 'satellite_texture.png')
+    texture_cache_png = texture_source_path  # kept for downstream name parity
     texture_output_path = os.path.join(output_textures_dir, 'satellite_texture.png')
 
     _log("Processing DEM into heightmap...")
@@ -151,10 +190,12 @@ def run_generate_world(
     # elevation -> normalized sim z (shifted by terrain_z_offset so it
     # matches the terrain visual). Staying in UTM all the way through
     # guarantees the sample comes from the same grid Gazebo is rendering.
+    # If a sample lands on a nodata edge pixel, fall back to dem_stats['min']
+    # so the asset sits at ground level rather than at z = -32768 * z_per_meter.
     def sample_terrain_z(gx, gy):
         utm_x, utm_y = converter.gazebo_to_utm((gx, gy))
         raw_elev = elevation_processor.sample_dem_elevation_utm(
-            dem_utm_cache_path, utm_x, utm_y
+            dem_utm_cache_path, utm_x, utm_y, nodata_fallback=dem_stats['min']
         )
         return (raw_elev - dem_stats['min']) * z_per_meter + terrain_z_offset
 
@@ -192,9 +233,20 @@ def run_generate_world(
         # "follow the ground" requires per-polyline elevation interpolation
         # that isn't implemented yet). Re-enable via --with-roads.
         roads = []
-    if os.path.exists(texture_cache_png):
-        _log("Copying satellite texture...")
-        texture_processor.process_satellite_texture(texture_cache_dir, texture_output_path)
+    flat_normal_output_path = os.path.join(output_textures_dir, 'flat_normal.png')
+    if os.path.exists(texture_source_path):
+        _log("Copying orthophoto / satellite texture...")
+        import shutil
+        os.makedirs(os.path.dirname(texture_output_path), exist_ok=True)
+        shutil.copy2(texture_source_path, texture_output_path)
+        # Emit a flat tangent-space normal map next to the diffuse texture.
+        # gz-sim's SDF parser aborts if <normal> is omitted from a heightmap
+        # <texture> (default resolves to __default__ and can't be found),
+        # but reusing the diffuse satellite photo as a normal map creates
+        # fake specular on flat ground. A 4x4 RGB(128, 128, 255) PNG is the
+        # smallest valid stand-in — every texel encodes "surface points
+        # straight up", so the heightmap renders matte.
+        Image.new('RGB', (4, 4), (128, 128, 255)).save(flat_normal_output_path)
 
     # Save the cloud mask alongside the heightmap for debug / visualization.
     if cloud_mask is not None:
@@ -207,6 +259,7 @@ def run_generate_world(
     sdf_content = builder.render_world_template(
         heightmap_path=heightmap_output_path if os.path.exists(heightmap_output_path) else None,
         texture_path=texture_output_path if os.path.exists(texture_output_path) else None,
+        flat_normal_path=flat_normal_output_path if os.path.exists(flat_normal_output_path) else None,
         buildings=buildings,
         trees=trees,
         roads=roads,
@@ -237,7 +290,13 @@ def cli(ctx, debug):
 @cli.command('generate-world')
 @click.option('--latitude', required=True, type=float, help='Latitude of the location.')
 @click.option('--longitude', required=True, type=float, help='Longitude of the location.')
-@click.option('--radius', required=True, type=float, help='Radius in meters around the location.')
+@click.option('--side-length', 'side_length', type=float, default=None,
+              help='Full side length of the generated square world in meters '
+                   '(e.g. --side-length 2000 -> 2000 m x 2000 m terrain).')
+@click.option('--radius', type=float, default=None,
+              help='DEPRECATED: half-extent. --radius 1000 produces the same '
+                   '2000 m x 2000 m world as --side-length 2000. Prefer '
+                   '--side-length for new usage.')
 @click.option('--output-dir', default='generated_world', type=click.Path(),
               help='Output directory for the generated world.')
 @click.option('--world-name', default='generated_world', help='Name of the generated Gazebo world.')
@@ -256,11 +315,42 @@ def cli(ctx, debug):
 @click.option('--cloud-filter/--no-cloud-filter', default=True,
               help='Drop buildings/trees whose satellite pixel looks like cloud '
                    '(high luminance + low saturation). On by default.')
+@click.option('--dem-file', type=click.Path(), default=None,
+              help='User-supplied DEM (any GDAL-readable raster, any CRS). Overrides SRTM3 '
+                   'download. Useful for high-resolution LIDAR / aerial flyover DEMs that '
+                   'have much better detail than SRTM3 (90 m/px). Must cover the '
+                   '(2R x 2R) meter bbox around the origin; will be clipped + reprojected.')
+@click.option('--texture-file', type=click.Path(), default=None,
+              help='User-supplied orthorectified image (PNG/JPEG/GeoTIFF). Overrides the '
+                   'satellite tile download. Dimensions should roughly match the DEM extent; '
+                   'Gazebo scales it to the heightmap size regardless.')
+@click.option('--max-heightmap-size', type=int, default=1025,
+              help='Cap on heightmap PNG dimensions (must be one of 65, 129, 257, 513, '
+                   '1025, 2049, 4097 — all 2^n+1). Default 1025. Raise to 2049 or 4097 '
+                   'to preserve sub-meter detail from aerial flyovers; each step quadruples '
+                   'GPU memory and scene-update cost in Gazebo.')
 @click.pass_context
-def generate_world(ctx, latitude, longitude, radius, output_dir, world_name,
-                   height_amplitude, tile_provider, tile_api_key, with_roads,
-                   cloud_filter):
-    """Generate a Gazebo Harmonic SDF world for a given location and radius."""
+def generate_world(ctx, latitude, longitude, side_length, radius, output_dir,
+                   world_name, height_amplitude, tile_provider, tile_api_key,
+                   with_roads, cloud_filter, dem_file, texture_file,
+                   max_heightmap_size):
+    """Generate a Gazebo Harmonic SDF world for a given location.
+
+    Exactly one of ``--side-length`` (full side, preferred) or ``--radius``
+    (legacy half-extent) is required. Internally the pipeline works in
+    half-extent meters; the conversion is just ``radius = side_length / 2``.
+    """
+    if side_length is None and radius is None:
+        raise click.UsageError("Provide --side-length or --radius.")
+    if side_length is not None and radius is not None:
+        raise click.UsageError("Use --side-length or --radius, not both.")
+    if side_length is not None:
+        radius = side_length / 2.0
+    if max_heightmap_size not in elevation_processor._OGRE2_VALID_SIZES:
+        raise click.UsageError(
+            f"--max-heightmap-size must be one of "
+            f"{elevation_processor._OGRE2_VALID_SIZES}; got {max_heightmap_size}."
+        )
     try:
         run_generate_world(
             latitude=latitude,
@@ -273,6 +363,9 @@ def generate_world(ctx, latitude, longitude, radius, output_dir, world_name,
             tile_api_key=tile_api_key,
             with_roads=with_roads,
             cloud_filter=cloud_filter,
+            dem_file=dem_file,
+            texture_file=texture_file,
+            max_heightmap_size=max_heightmap_size,
         )
     except Exception as e:
         logger.error(f"World generation failed: {e}")

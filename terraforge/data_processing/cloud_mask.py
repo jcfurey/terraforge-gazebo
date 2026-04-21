@@ -2,8 +2,8 @@
 
 Clouds in visible-light imagery have two reliable signatures:
 
-  * high luminance (L > ~0.82 in HLS)
-  * low saturation (S < ~0.18 in HLS)
+  * high luminance (L above ~0.75 in HLS, higher for crisp clouds)
+  * low saturation (S below ~0.20 in HLS)
 
 A pixel that is both bright *and* desaturated is almost certainly cloud — or
 snow, which we treat the same. We build a boolean mask from the cropped
@@ -11,14 +11,23 @@ satellite texture and dilate a few pixels to absorb cloud-edge halos, then
 expose an ``is_cloudy(lat, lon)`` lookup so asset processors can skip
 placements in those zones.
 
+Threshold tuning notes:
+  * Esri / Sentinel-2 composites tone-map clouds grayer than raw imagery,
+    so most cloud pixels land at L ≈ 0.70-0.85 rather than near 1.0.
+  * We keep the morphological opening (default 5 px) to filter out
+    individual bright concrete rooftops (~5-10 px at zoom 15) while
+    preserving real cloud regions (usually 30+ px contiguous).
+  * If you see legitimate buildings being dropped, raise ``l_min`` (e.g.
+    0.82). If large clouds are still missed, lower ``l_min`` toward 0.70
+    and/or raise ``s_max`` toward 0.25.
+
+The constructor logs L/S percentiles and the mask fraction at each stage so
+tuning is evidence-based rather than a guessing game.
+
 Known false-positive classes (material looks cloud-like):
   * Bright concrete rooftops / parking lots
   * Sand / dry lake beds
   * Building cores in very new satellite scenes with high glint
-
-If you see legitimate buildings being dropped, loosen ``l_min`` or raise
-``s_max`` in the :class:`CloudMask.from_image` call. Default values chosen to
-err on the side of keeping assets (fewer skips, accept some visible clouds).
 """
 
 from typing import Optional
@@ -28,13 +37,34 @@ from PIL import Image, ImageFilter
 
 from terraforge.utils.logging import logger
 
-DEFAULT_L_MIN = 0.85
-DEFAULT_S_MAX = 0.15
-# Morphological opening radius: erode N pixels before re-dilating. Kills
-# building-sized false-positive blobs (bright concrete rooftops typically
-# span 5-10 px at zoom 15) while preserving real cloud regions (usually 30+ px).
+# Two-stage thresholds. The strict pair detects "definitely cloud" pixels
+# (bright cloud cores) — we use these as seeds. The loose pair defines
+# "could be cloud" — pixels we'll accept *only if* connected to a strict
+# seed via geodesic dilation. This catches the dim halo around a real cloud
+# without sweeping in unrelated bright ground (parking lots, sand) that has
+# no nearby strict seed.
+DEFAULT_L_MIN = 0.75      # strict: definitely-cloud luminance (HLS)
+DEFAULT_S_MAX = 0.20      # strict: definitely-cloud saturation
+DEFAULT_L_LOOSE = 0.55    # loose: could-be-cloud luminance (halo / haze)
+DEFAULT_S_LOOSE = 0.30    # loose: could-be-cloud saturation
+# Morphological opening radius applied to the STRICT seeds before dilation.
+# Kills building-sized false-positive seeds (bright concrete rooftops, ~5-10
+# px at zoom 15) so they can't seed an unwanted geodesic expansion.
 DEFAULT_OPENING_PX = 5
+# Bridge-severing opening applied AFTER the first geodesic reconstruction.
+# Thin connections (≤ this radius * 2 pixels wide) between the true cloud
+# region and nearby bright false positives (e.g. concrete roofs adjoining
+# the cloud's halo) are severed here. The subsequent second geodesic pass
+# then prunes away components no longer connected to a strict seed.
+DEFAULT_BRIDGE_OPENING_PX = 2
+# Final dilation applied AFTER both geodesic passes — captures the soft
+# outer halo of the cloud that's slightly outside the loose threshold.
 DEFAULT_DILATION_PX = 3
+# Cap on geodesic-dilation iterations. Each iteration grows the seed by
+# 2 px (5x5 max filter), so 50 iters reaches ~100 px from any seed —
+# plenty for a cloud spanning hundreds of pixels in a 500x500 mosaic.
+_GEODESIC_MAX_ITERS = 50
+_GEODESIC_FILTER_PX = 5  # MaxFilter window size; must be odd.
 
 
 class CloudMask:
@@ -59,11 +89,30 @@ class CloudMask:
         bbox_wgs84: tuple,
         l_min: float = DEFAULT_L_MIN,
         s_max: float = DEFAULT_S_MAX,
+        l_loose: float = DEFAULT_L_LOOSE,
+        s_loose: float = DEFAULT_S_LOOSE,
         opening_px: int = DEFAULT_OPENING_PX,
+        bridge_opening_px: int = DEFAULT_BRIDGE_OPENING_PX,
         dilation_px: int = DEFAULT_DILATION_PX,
     ):
         """Build a mask from a satellite PNG that has been precisely cropped
-        to ``bbox_wgs84`` (north at image top, west at image left)."""
+        to ``bbox_wgs84`` (north at image top, west at image left).
+
+        Two-stage geodesic detection with bridge severing:
+          1. STRICT mask = (L >= l_min) & (S <= s_max) → cloud cores
+          2. Opening on strict seeds removes building-sized false positives
+          3. LOOSE mask = (L >= l_loose) & (S <= s_loose) → cloud envelope
+          4. First geodesic dilation grows strict seeds into the loose
+             envelope. This can leak across narrow bridges (a few pixels
+             wide) into adjacent bright regions like concrete roofs.
+          5. Opening on the reconstructed region SEVERS those narrow
+             bridges (and trims thin halo tendrils).
+          6. Second geodesic dilation from the strict seeds into the
+             opened reconstruction — keeps only components still connected
+             to a strict seed, so disconnected rooftops drop out.
+          7. Final dilation captures the soft outer halo just outside the
+             loose threshold.
+        """
         img = Image.open(image_path).convert("RGB")
         rgb = np.asarray(img, dtype=np.float32) / 255.0
         maxc = np.max(rgb, axis=-1)
@@ -77,25 +126,85 @@ class CloudMask:
         saturation = np.zeros_like(delta)
         np.divide(delta, denom, out=saturation, where=(denom > 1e-6))
 
-        raw_mask = (luminance >= l_min) & (saturation <= s_max)
-        raw_cloud_fraction = float(raw_mask.mean())
+        # Diagnostic percentiles (logged below so tuning is evidence-based).
+        l_p50, l_p90, l_p99 = np.percentile(luminance, [50, 90, 99])
+        s_p50, s_p90, s_p99 = np.percentile(saturation, [50, 90, 99])
 
-        # Pipeline: opening (erode→dilate by opening_px) removes small false
-        # positives like bright rooftops; then an extra dilation of dilation_px
-        # absorbs the soft halo around real cloud edges.
-        mask_img = Image.fromarray((raw_mask * 255).astype(np.uint8), mode='L')
-        if opening_px > 0:
-            mask_img = mask_img.filter(ImageFilter.MinFilter(2 * opening_px + 1))
-            mask_img = mask_img.filter(ImageFilter.MaxFilter(2 * opening_px + 1))
+        strict_mask = (luminance >= l_min) & (saturation <= s_max)
+        loose_mask = (luminance >= l_loose) & (saturation <= s_loose)
+        strict_fraction = float(strict_mask.mean())
+        loose_fraction = float(loose_mask.mean())
+
+        def _open_u8(arr_u8, r):
+            """Morphological opening (erode then dilate) by radius r."""
+            if r <= 0:
+                return arr_u8
+            img = Image.fromarray(arr_u8, mode='L')
+            img = img.filter(ImageFilter.MinFilter(2 * r + 1))
+            img = img.filter(ImageFilter.MaxFilter(2 * r + 1))
+            return np.asarray(img)
+
+        def _geodesic(seed_u8, envelope_u8):
+            """Grow ``seed_u8`` iteratively, intersecting each step with
+            ``envelope_u8``. Converges when no pixel is added. Returns the
+            final uint8 mask and the iteration count for diagnostics."""
+            current = seed_u8.copy()
+            iters = 0
+            for iters in range(1, _GEODESIC_MAX_ITERS + 1):
+                dilated = np.asarray(
+                    Image.fromarray(current, mode='L')
+                         .filter(ImageFilter.MaxFilter(_GEODESIC_FILTER_PX))
+                )
+                new = np.minimum(dilated, envelope_u8)
+                if np.array_equal(new, current):
+                    break
+                current = new
+            return current, iters
+
+        strict_u8 = (strict_mask * 255).astype(np.uint8)
+        loose_u8 = (loose_mask * 255).astype(np.uint8)
+
+        # (2) Opening on strict seeds → seeds
+        seeds = _open_u8(strict_u8, opening_px)
+        seed_fraction = float((seeds > 127).mean())
+
+        # (4) First geodesic growth: seeds → loose envelope
+        recon1, iters1 = _geodesic(seeds, loose_u8)
+        recon1_fraction = float((recon1 > 127).mean())
+
+        # (5) Bridge-severing opening on the reconstruction
+        recon1_open = _open_u8(recon1, bridge_opening_px)
+        bridge_cut_fraction = float((recon1_open > 127).mean())
+
+        # (6) Second geodesic growth: re-grow from strict seeds into the
+        # bridge-severed envelope. Disconnected components (the false-
+        # positive roofs that used to be reached via narrow bridges) are
+        # dropped here because no strict seed can reach them.
+        recon2, iters2 = _geodesic(seeds, recon1_open)
+        recon2_fraction = float((recon2 > 127).mean())
+
+        # (7) Final dilation captures the slightly-outside-loose halo so
+        # cloud edges aren't sharp.
         if dilation_px > 0:
-            mask_img = mask_img.filter(ImageFilter.MaxFilter(2 * dilation_px + 1))
-        mask = np.asarray(mask_img) > 127
+            recon2 = np.asarray(
+                Image.fromarray(recon2, mode='L')
+                     .filter(ImageFilter.MaxFilter(2 * dilation_px + 1))
+            )
+        mask = recon2 > 127
 
         instance = cls(mask, bbox_wgs84)
         logger.info(
             f"Cloud mask built from {image_path}: "
-            f"{raw_cloud_fraction:.1%} raw -> {instance.cloud_fraction:.1%} after "
-            f"opening/dilation (L>{l_min}, S<{s_max}, open={opening_px}px, dilate={dilation_px}px)"
+            f"L p50/p90/p99 = {l_p50:.2f}/{l_p90:.2f}/{l_p99:.2f}, "
+            f"S p50/p90/p99 = {s_p50:.2f}/{s_p90:.2f}/{s_p99:.2f}. "
+            f"Pipeline: strict={strict_fraction:.1%} "
+            f"(L>={l_min},S<={s_max}) -> "
+            f"{seed_fraction:.1%} after seed-open({opening_px}px) -> "
+            f"{recon1_fraction:.1%} after geodesic-1 "
+            f"(into loose {loose_fraction:.1%}, {iters1} iters) -> "
+            f"{bridge_cut_fraction:.1%} after bridge-open({bridge_opening_px}px) -> "
+            f"{recon2_fraction:.1%} after geodesic-2 ({iters2} iters) -> "
+            f"{instance.cloud_fraction:.1%} after dilate({dilation_px}px)."
         )
         return instance
 

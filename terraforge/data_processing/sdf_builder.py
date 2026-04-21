@@ -10,6 +10,7 @@ class SDFWorldBuilder:
         logger.info(f"SDF World Builder initialized with template directory: {template_dir}")
 
     def render_world_template(self, *, heightmap_path=None, texture_path=None,
+                              flat_normal_path=None,
                               buildings=None, trees=None, roads=None,
                               extent_meters=1000.0, height_amplitude=200.0,
                               terrain_z_offset=0.0):
@@ -17,6 +18,7 @@ class SDFWorldBuilder:
         rendered_sdf = template.render(
             heightmap_path=heightmap_path,
             texture_path=texture_path,
+            flat_normal_path=flat_normal_path,
             buildings=buildings or [],
             trees=trees or [],
             roads=roads or [],

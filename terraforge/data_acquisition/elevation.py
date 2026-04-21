@@ -33,6 +33,8 @@ from pyproj import Transformer
 
 from terraforge.utils.logging import logger
 
+gdal.UseExceptions()
+
 
 def _utm_crs_for(lat: float, lon: float) -> str:
     """Return the EPSG code for the UTM zone covering (lat, lon)."""
@@ -125,14 +127,27 @@ def reproject_dem_to_utm(
         cy_utm + radius_meters,
     )
 
+    # Propagate the source nodata value so edge pixels outside WGS84 coverage
+    # stay tagged rather than leaking the raw -32768 sentinel into downstream
+    # min/max math (which happened before this fix — blew up height_amplitude
+    # to tens of kilometers). SRTM3 sets band nodata to -32768; user-supplied
+    # DEMs may use a different value or none at all.
+    src_ds = gdal.Open(src_path)
+    if src_ds is None:
+        raise RuntimeError(f"Failed to open source DEM for nodata probe: {src_path}")
+    try:
+        src_nodata = src_ds.GetRasterBand(1).GetNoDataValue()
+    finally:
+        src_ds = None
+
     logger.info(
         f"Reprojecting DEM {src_path} -> {dst_path}: "
         f"{utm_crs}, {pixel_count}x{pixel_count} px over "
         f"({2 * radius_meters:.0f}m x {2 * radius_meters:.0f}m), "
-        f"res={2 * radius_meters / pixel_count:.2f} m/px"
+        f"res={2 * radius_meters / pixel_count:.2f} m/px "
+        f"(nodata={src_nodata})"
     )
     try:
-        gdal.UseExceptions()
         result = gdal.Warp(
             destNameOrDestDS=dst_path,
             srcDSOrSrcDSTab=src_path,
@@ -143,6 +158,8 @@ def reproject_dem_to_utm(
             resampleAlg='bilinear',
             format='GTiff',
             multithread=True,
+            srcNodata=src_nodata,
+            dstNodata=src_nodata,
         )
         if result is None:
             raise RuntimeError(f"gdal.Warp returned None for {src_path}")

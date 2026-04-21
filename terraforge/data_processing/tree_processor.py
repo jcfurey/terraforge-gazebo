@@ -18,14 +18,40 @@ from terraforge.utils.coordinates import CoordinateConverter
 from terraforge.utils.logging import logger
 
 # Number of reusable tree variants (different heights / canopy radii) that
-# will be generated once and referenced by each placement.
+# will be generated once and referenced by each placement. Variants are sorted
+# smallest -> largest in _generate_tree_variants; named subsets below pick
+# index ranges so scrub uses small variants and forests use the full mix.
 TREE_VARIANTS = 5
-# Target density for forest-polygon scatter (trees per square meter).
-FOREST_DENSITY = 1 / 400.0
+_VARIANT_SHRUB = (0, 1)        # small variants (~3-5 m) for scrub / heath / hedge
+_VARIANT_MID = (1, 2, 3)       # mid variants (~5-9 m) for orchards / parks
+_VARIANT_FOREST = (0, 1, 2, 3, 4)  # full mix for dense woods
+
+# Per-class scatter density (trees per square meter) for polygon features.
+# Densities are deliberately low for sparse cover (heath, scrub, vineyard)
+# so the world doesn't drown in tree collision geometry, and the per-class
+# variant pool controls canopy size.
+_POLYGON_CLASSES = {
+    ('natural', 'wood'):     {'density': 1 / 400.0,  'variants': _VARIANT_FOREST},
+    ('landuse', 'forest'):   {'density': 1 / 400.0,  'variants': _VARIANT_FOREST},
+    ('natural', 'scrub'):    {'density': 1 / 600.0,  'variants': _VARIANT_SHRUB},
+    ('natural', 'heath'):    {'density': 1 / 800.0,  'variants': _VARIANT_SHRUB},
+    ('landuse', 'orchard'):  {'density': 1 / 300.0,  'variants': _VARIANT_MID},
+    ('landuse', 'vineyard'): {'density': 1 / 800.0,  'variants': _VARIANT_SHRUB},
+    ('leisure', 'park'):     {'density': 1 / 1500.0, 'variants': _VARIANT_MID},
+    ('leisure', 'garden'):   {'density': 1 / 400.0,  'variants': _VARIANT_MID},
+}
+
+# Per-meter density for LineString features like natural=tree_row / hedge.
+# A dense hedgerow is ~one shrub every 2 m.
+_LINESTRING_DENSITY = 1 / 2.0
+
 # Hard cap on scattered trees per world to keep Gazebo sane. gz-transport v13
 # has a thread-safety bug around getenv() that segfaults the GUI when scene
 # updates fire too fast during load; keeping total instances modest helps.
-MAX_FOREST_TREES = 200
+# Bumped from 200 -> 1500 now that scrub / orchard / park classes contribute
+# (rural sites often have more scrub than forest) and variants span shrub
+# -> tree so the collision load per instance scales with size.
+MAX_FOREST_TREES = 1500
 
 
 def _write_model_config(model_dir, model_name):
@@ -174,7 +200,7 @@ def process_osm_trees_to_sdf(osm_filepath: str, models_dir: str, origin_wgs84: t
         lat, lon = converter.gazebo_to_wgs84((gx, gy))
         return cloud_mask.is_cloudy(lat, lon)
 
-    def add_tree(x, y):
+    def add_tree(x, y, variant_pool=None):
         nonlocal cloud_skipped, out_of_world_skipped
         if not in_world(x, y):
             out_of_world_skipped += 1
@@ -182,10 +208,20 @@ def process_osm_trees_to_sdf(osm_filepath: str, models_dir: str, origin_wgs84: t
         if tree_is_cloudy(x, y):
             cloud_skipped += 1
             return
-        variant = variant_names[rng.randrange(TREE_VARIANTS)]
+        pool = variant_pool if variant_pool is not None else tuple(range(TREE_VARIANTS))
+        variant = variant_names[rng.choice(pool)]
         z = float(elevation_sampler(x, y)) if elevation_sampler is not None else 0.0
         placements.append({'model_name': variant, 'pose_xy': (x, y), 'pose_z': z})
 
+    def _classify_polygon(props):
+        """Return the _POLYGON_CLASSES entry matching this feature's tags,
+        or None if the polygon isn't a recognized foliage class."""
+        for (key, value), cfg in _POLYGON_CLASSES.items():
+            if props.get(key) == value:
+                return cfg
+        return None
+
+    line_count = 0
     for feature in osm_data['features']:
         geom = feature['geometry']
         gtype = geom['type']
@@ -194,16 +230,37 @@ def process_osm_trees_to_sdf(osm_filepath: str, models_dir: str, origin_wgs84: t
         if gtype == 'Point':
             lon, lat = geom['coordinates'][:2]
             gx, gy, _ = converter.wgs84_to_gazebo((lat, lon))
-            add_tree(gx, gy)
+            # Individual OSM trees are usually medium-sized; skip the
+            # largest-forest and smallest-shrub variants to keep them
+            # looking like single mature trees rather than a 12 m monster.
+            add_tree(gx, gy, variant_pool=_VARIANT_MID)
             point_count += 1
 
+        elif gtype == 'LineString':
+            # Hedgerows / tree_row / tree lines. Scatter shrub-sized variants
+            # along the line at _LINESTRING_DENSITY. Treat MultiLineString via
+            # iteration over parts if we ever see them.
+            if forest_tree_budget <= 0:
+                continue
+            line_wgs84 = shapely.geometry.shape(geom)
+            line_local = shapely.ops.transform(project, line_wgs84)
+            if world_box is not None:
+                line_local = line_local.intersection(world_box)
+                if line_local.is_empty:
+                    continue
+            length = line_local.length
+            target = min(int(length * _LINESTRING_DENSITY),
+                         forest_tree_budget)
+            for i in range(target):
+                t = (i + 0.5) / max(target, 1)
+                pt = line_local.interpolate(t, normalized=True)
+                add_tree(pt.x, pt.y, variant_pool=_VARIANT_SHRUB)
+            forest_tree_budget -= target
+            line_count += 1
+
         elif gtype in ('Polygon', 'MultiPolygon'):
-            # Only scatter inside forest-tagged polygons, not generic areas.
-            is_forest = (
-                props.get('natural') == 'wood' or
-                props.get('landuse') == 'forest'
-            )
-            if not is_forest or forest_tree_budget <= 0:
+            cfg = _classify_polygon(props)
+            if cfg is None or forest_tree_budget <= 0:
                 continue
             polygon_wgs84 = shapely.geometry.shape(geom)
             polygon_local = shapely.ops.transform(project, polygon_wgs84)
@@ -217,16 +274,17 @@ def process_osm_trees_to_sdf(osm_filepath: str, models_dir: str, origin_wgs84: t
                 if polygon_local.is_empty or polygon_local.area <= 0:
                     continue
             pts = _scatter_in_polygon(
-                polygon_local, FOREST_DENSITY, forest_tree_budget, rng
+                polygon_local, cfg['density'], forest_tree_budget, rng
             )
             forest_tree_budget -= len(pts)
             for x, y in pts:
-                add_tree(x, y)
+                add_tree(x, y, variant_pool=cfg['variants'])
             poly_count += 1
 
     logger.info(
         f"OSM foliage processed: {len(placements)} trees "
-        f"({point_count} mapped, {poly_count} forest polygons, "
+        f"({point_count} mapped points, {line_count} hedgerows, "
+        f"{poly_count} vegetated polygons, "
         f"{cloud_skipped} cloud-masked, {out_of_world_skipped} outside-world) "
         f"across {len(variant_names)} model variants"
     )

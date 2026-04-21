@@ -38,12 +38,24 @@ def download_osm_buildings(location: tuple, radius_meters: float, output_path: s
 
 
 def download_osm_trees(location: tuple, radius_meters: float, output_path: str) -> int:
-    """Download individual trees (points) and forested areas (polygons).
+    """Download individual trees (points) and vegetated areas (polygons).
 
     Combines:
-      * ``natural=tree`` — individual mapped trees
-      * ``natural=wood`` / ``landuse=forest`` — forested polygons we'll scatter
-        synthetic trees into during processing.
+      * ``natural=tree`` — individual mapped trees (points)
+      * ``natural=tree_row`` — hedgerows / tree lines (LineString, handled as scatter)
+      * ``natural=wood`` — naturally wooded polygons (dense scatter)
+      * ``natural=scrub`` — scrubland / shrubs (sparse small-variant scatter)
+      * ``natural=heath`` — heathland (sparse small-variant scatter)
+      * ``landuse=forest`` — managed forest polygons (dense scatter)
+      * ``landuse=orchard`` — planted orchards (medium scatter, mid-size trees)
+      * ``landuse=vineyard`` — vineyards (sparse small-variant scatter)
+      * ``leisure=park`` / ``leisure=garden`` — parks with scattered trees
+        (very sparse, mid/small variants)
+
+    Previously only ``natural=tree|wood`` + ``landuse=forest`` were queried, so
+    rural scrubland and orchards were invisible to the scatterer. Expanding the
+    query here is the only place these classes enter the pipeline; the
+    tree_processor keys on the same tags to pick appropriate densities.
     """
     logger.info(
         f"Downloading OSM foliage for location {location} with radius "
@@ -52,7 +64,11 @@ def download_osm_trees(location: tuple, radius_meters: float, output_path: str) 
     try:
         return _download(
             location, radius_meters,
-            tags={"natural": ["tree", "wood"], "landuse": "forest"},
+            tags={
+                "natural": ["tree", "tree_row", "wood", "scrub", "heath"],
+                "landuse": ["forest", "orchard", "vineyard"],
+                "leisure": ["park", "garden"],
+            },
             output_path=output_path,
             label="OSM foliage",
         )

@@ -130,10 +130,20 @@
               <size>{{ extent_meters }} {{ extent_meters }} {{ height_amplitude }}</size>
               <pos>0 0 {{ terrain_z_offset }}</pos>
               {% if texture_path %}
+              <!-- NOTE: <normal> points at a FLAT normal map (all pixels
+                   RGB(128, 128, 255) = tangent-space up). We cannot just
+                   reuse the diffuse satellite PNG here — the parser treats
+                   its RGB pixels as XYZ surface-gradient encoding, which
+                   renders fake specular highlights on flat surfaces like
+                   parking lots and rooftops (the "shiny" look). We also
+                   cannot omit <normal>: sdf1.10 defaults it to __default__,
+                   and gz-sim's parser aborts with "uri [__default__] could
+                   not be resolved" on load. A flat normal PNG is the
+                   minimum valid stand-in. -->
               <texture>
                 <size>{{ extent_meters }}</size>
                 <diffuse>file://{{ texture_path }}</diffuse>
-                <normal>file://{{ texture_path }}</normal>
+                <normal>file://{{ flat_normal_path }}</normal>
               </texture>
               {% endif %}
             </heightmap>
