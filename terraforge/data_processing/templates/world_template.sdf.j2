@@ -192,6 +192,29 @@
     {% endfor %}
 
     {% if enable_level_streaming %}
+    <!-- ── Performer placeholder ─────────────────────────────────────────
+         gz-sim's LevelManager binds <performer><ref> to a top-level
+         model at world LOAD time. The real rover URDF is spawned later
+         by ros_gz_sim::create, so without this stub the binding fails
+         with:
+           [Err] Unable to find performer parent entity with name[...].
+           This performer will not adhere to levels.
+         Ship a tiny invisible static model sharing the performer's
+         name so the binding succeeds at load. The launch sequence
+         (bringup_sim_erdc/launch/gazebo.launch.py) calls
+         /world/<name>/remove on this placeholder just before spawning
+         the real rover so the names don't collide. -->
+    <model name="{{ performer_ref }}">
+      <static>true</static>
+      <pose>0 0 0 0 0 0</pose>
+      <link name="anchor">
+        <visual name="v">
+          <transparency>1.0</transparency>
+          <geometry><sphere><radius>0.01</radius></sphere></geometry>
+        </visual>
+      </link>
+    </model>
+
     <!-- ── Native gz-sim level streaming ─────────────────────────────────
          SDFormat <level>/<performer> elements DO work in single-process
          gz-sim 8, but only when:
