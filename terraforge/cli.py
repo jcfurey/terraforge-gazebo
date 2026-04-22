@@ -160,7 +160,14 @@ def run_generate_world(
     )
 
     output_models_dir = os.path.join(output_dir, 'models')
-    output_media_dir = os.path.join(output_dir, 'media')
+    # Per-world media subdir: `<output-dir>/media_<world_name>/`. Without the
+    # suffix, a second generation at a different lat/lon (or with a different
+    # foliage style at the same coords) would overwrite the first world's
+    # heightmap / satellite texture / cloud mask, leaving the first world's
+    # inline building/tree poses floating relative to a stranger's terrain.
+    # Each world file bakes an absolute `file://` path to its media, so
+    # parallel dirs coexist cleanly.
+    output_media_dir = os.path.join(output_dir, f'media_{world_name}')
     output_textures_dir = os.path.join(output_media_dir, 'materials', 'textures')
     os.makedirs(output_models_dir, exist_ok=True)
     os.makedirs(output_textures_dir, exist_ok=True)

@@ -9,7 +9,7 @@
   <img src="https://github.com/r3tr056/terraforge-gazebo/blob/master/.github/images/banner.png?raw=true" alt="TerraForge Gazebo">
 </p>
 
-Generate Gazebo Harmonic simulation worlds from real-world geospatial data. TerraForge downloads a DEM, OpenStreetMap features (buildings, foliage, optional roads), and satellite-tile imagery for a given lat/lon/radius, then emits a colcon-installable `ros2 launch`-able `.world` file with a matching `models/` + `media/` tree.
+Generate Gazebo Harmonic simulation worlds from real-world geospatial data. TerraForge downloads a DEM, OpenStreetMap features (buildings, foliage, optional roads), and satellite-tile imagery for a given lat/lon/radius, then emits a colcon-installable `ros2 launch`-able `.world` file with a matching `models/` + `media_<world-name>/` tree.
 
 ## Status
 
@@ -26,7 +26,7 @@ Beta. Packaged as an **ament_python** ROS 2 package called `terraforge_gazebo`, 
   - **Cloud masking** on the satellite imagery — drops asset placements whose pixel looks cloud-like (high luminance + low saturation + morphological opening to dismiss small false-positive blobs like bright rooftops).
 - **Seven satellite tile providers** with a registry (`esri`, `sentinel2`, `usgs_naip`, `gibs_bluemarble`, `mapbox`, `maptiler`, `bing`). Esri is the recommended keyless default. Mosaics are precision-cropped to the exact user bbox before saving.
 - **Strict UTM coordinate handling** — bbox math and asset placement use the local UTM zone (EPSG:326XX / 327XX), not Web Mercator, so feature positions match the textured terrain to within pyproj precision at any latitude.
-- **Portable output**: each generated world ships with its own `models/` and `media/` subdirectories, loaded via `GZ_SIM_RESOURCE_PATH`.
+- **Portable output**: each generated world ships with its own `models/` + `media_<world-name>/` subdirectories, loaded via `GZ_SIM_RESOURCE_PATH` + baked-in `file://` paths.
 - **Physics-ready SDF template**: loads `bullet-featherstone`, the IMU + Contact systems, and a flat collision ground plane (since neither dartsim nor bullet-featherstone supports SDF heightmap collision). Workspace rovers drive on flat ground while the heightmap renders visually.
 - **ROS 2 integration**: a `spawn_world.launch.py` that wraps `ros_gz_sim`'s `gz_sim.launch.py`.
 
@@ -92,18 +92,32 @@ terraforge-gui
 <output-dir>/
 ├── <world-name>.world
 ├── models/
-│   ├── building_<osmid>_N/     (one per OSM building feature)
-│   ├── tree_generic_0..4/      (5 reusable tree variants, <include>d many times)
-│   └── road_<osmid>_N/         (only when --with-roads)
-└── media/
-    ├── heightmap.png           (16-bit, 2^n+1 sized)
-    ├── cloud_mask.png          (debug: white = pixel was cloud-masked)
+│   ├── building_<osmid>_N/       (one per OSM building feature — dead weight today:
+│   │                              buildings are inline <link>s inside tile compound
+│   │                              models, not referenced via model://; retained for
+│   │                              future switch to include-based emission)
+│   ├── tree_generic_0..4/        (5 reusable tree variants; referenced in `fuel` mode
+│   │                              via model://tree_fuel_* wrappers)
+│   └── road_<osmid>_N/           (only when --with-roads)
+└── media_<world-name>/           (per-world subdir — see note below)
+    ├── heightmap.png             (16-bit, 2^n+1 sized)
+    ├── cloud_mask.png            (debug: white = pixel was cloud-masked)
     └── materials/
         └── textures/
-            └── satellite_texture.png
+            ├── satellite_texture.png
+            └── flat_normal.png
 ```
 
-The launch file prepends `<output-dir>/models` to `GZ_SIM_RESOURCE_PATH` so `<include><uri>model://building_...</uri></include>` (and the tree / road includes) resolve.
+**Per-world `media_<world-name>/`.** Each generation writes its heightmap / satellite
+texture / cloud mask into a subdir keyed on `--world-name`, not a shared `media/`. This
+lets two worlds (e.g. `erdc_vicksburg.world` + `erdc_vicksburg_fuel.world`, or worlds at
+different lat/lon) coexist in the same `output-dir` without a regen of one clobbering the
+other's terrain imagery. The generated `.world` bakes an absolute `file://` path to its
+`media_<world-name>/` subdir, so worlds never collide. A pre-per-world-split `media/`
+directory from an older generation is left in place — safe to delete once you've
+regenerated.
+
+The launch file prepends `<output-dir>/models` to `GZ_SIM_RESOURCE_PATH` so any `<include><uri>model://...</uri></include>` (tree / road / future building includes) resolve.
 
 ## Configuration
 
@@ -147,7 +161,7 @@ Attribution is emitted as a log line per generation run; include it when publish
   - `tree_processor.py` — 5 reusable tree variants + forest-polygon scatter; clipped to world bbox.
   - `road_processor.py` — OSM LineStrings → polyline ribbons (visual-only).
   - `cloud_mask.py` — HLS-based cloud detection with morphological opening + per-(lat, lon) lookup.
-  - `texture_processor.py` — copies the cropped mosaic into `media/materials/textures/`.
+  - `texture_processor.py` — copies the cropped mosaic into `media_<world-name>/materials/textures/`.
   - `sdf_builder.py` — Jinja SDF world template renderer.
   - `templates/world_template.sdf.j2` — the SDF skeleton (physics engine, lighting, terrain, buildings, trees, roads, collision ground-plane).
 - `terraforge.utils.coordinates` — WGS84 ↔ UTM ↔ local-Gazebo converter (local UTM zone derived from origin longitude, not Web Mercator).
