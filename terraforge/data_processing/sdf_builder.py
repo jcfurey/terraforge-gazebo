@@ -55,21 +55,47 @@ def _group_placements_into_tiles(placements, half_extent_m, tile_size_m):
     return tiles
 
 
+def _fuel_tree_tile_map(trees, half_extent_m, tile_size_m):
+    """Return {(tx, ty): [fuel_include_name, ...]} for fuel-mode tree
+    placements. Non-fuel placements (those without ``fuel_include_sdf``) are
+    skipped. The returned mapping lets `render_world_template` emit per-tile
+    `<ref>` entries so the gz-sim level manager unloads distant Fuel trees
+    alongside their cartoon-scene tile.
+    """
+    tile_map = {}
+    for p in trees or []:
+        if not p.get('fuel_include_sdf'):
+            continue
+        tx, ty, _n = _tile_index(p['pose_xy'], half_extent_m, tile_size_m)
+        tile_map.setdefault((tx, ty), []).append(p['fuel_include_name'])
+    return tile_map
+
+
 def build_scene_tiles(buildings, trees, roads, half_extent_m,
                        tile_size_m=DEFAULT_TILE_SIZE_M):
     """Group every static placement into tile buckets and render each as a
     compound <model name='tile_X_Y'> with all its links inline.
 
     Returns a list of dicts with model SDF, tile indices, world-frame
-    center (for level bbox placement), and link count.
+    center (for level bbox placement), and link count. Fuel-mode tree
+    placements (those emitted as top-level `<include>` instead of inline
+    `<link>`) skip the compound entirely — see ``_fuel_tree_tile_map`` /
+    ``render_world_template`` for how they're attached to per-tile
+    `<level>` entries so streaming still culls them with their tile.
     """
     all_placements = list(buildings or []) + list(trees or []) + list(roads or [])
     tiles_map = _group_placements_into_tiles(all_placements, half_extent_m, tile_size_m)
+    # Fuel-mode tree names, bucketed by tile, so each tile's <level> can
+    # <ref> its trees. Computed up-front so even tiles that happen to have
+    # zero buildings/roads (trees only) still emit a level block below.
+    fuel_tree_tile_map = _fuel_tree_tile_map(trees, half_extent_m, tile_size_m)
+    all_tile_keys = sorted(set(tiles_map.keys()) | set(fuel_tree_tile_map.keys()))
 
     tile_records = []
-    for (tx, ty), items in sorted(tiles_map.items()):
+    for (tx, ty) in all_tile_keys:
         tile_id = f"tile_{tx}_{ty}"
-        links_sdf = "\n".join(item['link_sdf'] for item in items)
+        items = tiles_map.get((tx, ty), [])
+        fuel_tree_names = fuel_tree_tile_map.get((tx, ty), [])
         # bullet-featherstone requires every link in a model to be connected
         # into a single kinematic tree via joints. A static compound tile
         # with N disconnected links fails validation ("Multiple sub-trees /
@@ -81,24 +107,31 @@ def build_scene_tiles(buildings, trees, roads, half_extent_m,
         # underscores; use plain names so the parser accepts them.
         root_name = f"{tile_id}_root"
         root_link = f"    <link name='{root_name}'></link>"
-        joints_sdf = "\n".join(
-            f"    <joint name='j_{item['link_name']}' type='fixed'>\n"
-            f"      <parent>{root_name}</parent>\n"
-            f"      <child>{item['link_name']}</child>\n"
-            f"    </joint>"
-            for item in items
-        )
-        # <static>true</static> is mandatory — compound tile is a terrain prop.
-        # Single pose at origin; each link carries its own world-relative pose.
-        model_sdf = (
-            f"  <model name='{tile_id}'>\n"
-            f"    <static>true</static>\n"
-            f"    <pose>0 0 0 0 0 0</pose>\n"
-            f"{root_link}\n"
-            f"{links_sdf}\n"
-            f"{joints_sdf}\n"
-            f"  </model>"
-        )
+        if items:
+            links_sdf = "\n".join(item['link_sdf'] for item in items)
+            joints_sdf = "\n".join(
+                f"    <joint name='j_{item['link_name']}' type='fixed'>\n"
+                f"      <parent>{root_name}</parent>\n"
+                f"      <child>{item['link_name']}</child>\n"
+                f"    </joint>"
+                for item in items
+            )
+            # <static>true</static> mandatory — compound tile is a terrain prop.
+            # Single pose at origin; each link carries its own world-relative pose.
+            model_sdf = (
+                f"  <model name='{tile_id}'>\n"
+                f"    <static>true</static>\n"
+                f"    <pose>0 0 0 0 0 0</pose>\n"
+                f"{root_link}\n"
+                f"{links_sdf}\n"
+                f"{joints_sdf}\n"
+                f"  </model>"
+            )
+        else:
+            # Fuel-only tile — no inline links, so no compound model needed.
+            # We still emit a record so the level block below gets a <ref> for
+            # the tile's fuel trees.
+            model_sdf = ""
         # Centre of the tile in world metres. Used by <level> geometry/pose
         # below so the tile's activation bbox sits over its contents.
         cx = -half_extent_m + (tx + 0.5) * tile_size_m
@@ -108,6 +141,9 @@ def build_scene_tiles(buildings, trees, roads, half_extent_m,
             'tx': tx,
             'ty': ty,
             'count': len(items),
+            'fuel_tree_count': len(fuel_tree_names),
+            'fuel_tree_names': fuel_tree_names,
+            'has_compound_model': bool(items),
             'model_sdf': model_sdf,
             'center_x': cx,
             'center_y': cy,
@@ -115,12 +151,31 @@ def build_scene_tiles(buildings, trees, roads, half_extent_m,
         })
     if tile_records:
         avg = sum(r['count'] for r in tile_records) / len(tile_records)
+        total_fuel = sum(r['fuel_tree_count'] for r in tile_records)
+        fuel_tile_count = sum(1 for r in tile_records if r['fuel_tree_count'])
         logger.info(
-            f"Scene tiled: {len(tile_records)} tile model(s), "
-            f"{sum(r['count'] for r in tile_records)} links total, "
+            f"Scene tiled: {len(tile_records)} tile(s), "
+            f"{sum(r['count'] for r in tile_records)} compound links total, "
             f"~{avg:.0f} links/tile (tile_size={tile_size_m:.0f} m)"
+            + (f"; {total_fuel} fuel-mode trees across {fuel_tile_count} tile(s)"
+               if total_fuel else "")
         )
     return tile_records
+
+
+def collect_fuel_tree_includes(trees):
+    """Return the concatenated top-level `<include>` SDF for every fuel-mode
+    tree placement, or empty string if none. Placements are emitted in the
+    order tree_processor produced them; the level manager takes care of
+    activation, so ordering is cosmetic."""
+    fragments = [
+        p['fuel_include_sdf']
+        for p in (trees or [])
+        if p.get('fuel_include_sdf')
+    ]
+    if not fragments:
+        return ""
+    return "\n".join(fragments)
 
 
 class SDFWorldBuilder:
@@ -136,11 +191,17 @@ class SDFWorldBuilder:
                               tile_size_m=DEFAULT_TILE_SIZE_M,
                               level_active_radius_m=DEFAULT_LEVEL_ACTIVE_RADIUS_M,
                               performer_ref=DEFAULT_PERFORMER_REF,
-                              enable_level_streaming=True):
+                              enable_level_streaming=True,
+                              foliage_style='cartoon'):
         half_extent_m = extent_meters / 2.0
         scene_tiles = build_scene_tiles(
             buildings, trees, roads, half_extent_m, tile_size_m=tile_size_m,
         )
+        # Fuel-mode tree placements are top-level includes — collect their
+        # raw SDF fragment so the template can splice them in at world scope,
+        # separately from the tile compounds. Each tile already carries the
+        # names of its fuel trees for <level><ref> registration.
+        fuel_tree_includes_sdf = collect_fuel_tree_includes(trees)
         # Native gz-sim <level> uses an AABB + <buffer> for hysteresis.
         # Keep the "active radius" arg as the caller-facing knob (max
         # distance from tile centre at which it should load) and derive
@@ -160,6 +221,7 @@ class SDFWorldBuilder:
             texture_path=texture_path,
             flat_normal_path=flat_normal_path,
             scene_tiles=scene_tiles,
+            fuel_tree_includes_sdf=fuel_tree_includes_sdf,
             extent_meters=extent_meters,
             height_amplitude=height_amplitude,
             terrain_z_offset=terrain_z_offset,
@@ -167,6 +229,7 @@ class SDFWorldBuilder:
             level_active_radius_m=level_active_radius_m,
             level_buffer_m=level_buffer_m,
             performer_ref=performer_ref,
+            foliage_style=foliage_style,
         )
         logger.info("SDF world template rendered.")
         return rendered_sdf

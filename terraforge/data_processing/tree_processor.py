@@ -280,6 +280,30 @@ def _variant_label(variant_idx: int) -> str:
     return f"tree_generic_{variant_idx}"
 
 
+def _tree_fuel_include_sdf(unique_name: str, pose_xyz: tuple, variant_idx: int) -> str:
+    """Emit a top-level `<include>` referencing a `tree_fuel_<variant>` wrapper
+    model. The wrapper is resolved via `GZ_SIM_RESOURCE_PATH` — it lives under
+    `<world-dir>/models_fuel/tree_fuel_<variant>/`, where its `model.sdf`
+    `<include>`s the real Gazebo Fuel URI (Oak tree / Pine Tree) with the
+    appropriate `<scale>` for this variant's size class.
+
+    Yaw is randomized per-tree via the same name-hashed RNG used by the cartoon
+    path so a regen produces reproducibly-oriented trees. Fuel models already
+    carry their own trunk color + canopy shape, so no per-instance jitter is
+    needed here — visual variation comes from the 5 wrapper scales and yaw.
+    """
+    px, py, pz = pose_xyz
+    rng = random.Random(hash((unique_name, variant_idx)) & 0xFFFFFFFF)
+    yaw = rng.uniform(0.0, 6.2832)
+    return (
+        f"<include>\n"
+        f"  <name>{unique_name}</name>\n"
+        f"  <pose>{px:.3f} {py:.3f} {pz:.3f} 0 0 {yaw:.3f}</pose>\n"
+        f"  <uri>model://tree_fuel_{variant_idx}</uri>\n"
+        f"</include>"
+    )
+
+
 def _scatter_in_polygon(polygon, density, max_count, rng):
     """Poisson-ish point scatter inside a polygon at ``density`` points/m²."""
     minx, miny, maxx, maxy = polygon.bounds
@@ -479,12 +503,26 @@ def process_osm_trees_to_sdf(osm_filepath: str, models_dir: str, origin_wgs84: t
                              seed: int = 1337,
                              satellite_texture_path: str = None,
                              buildings_geojson_path: str = None,
-                             vegetation_fill: bool = True) -> list:
-    """Return a list of ``{model_name, pose_xy, pose_z}`` tree placements.
+                             vegetation_fill: bool = True,
+                             foliage_style: str = 'cartoon') -> list:
+    """Return a list of tree placements with mode-appropriate SDF fragments.
 
     Handles both point features (``natural=tree``) and polygon features
     (``natural=wood`` / ``landuse=forest``), scattering synthetic trees inside
     each forest polygon at ``FOREST_DENSITY`` up to ``MAX_FOREST_TREES``.
+
+    ``foliage_style`` selects the emission mode:
+
+    - ``'cartoon'`` (default): each placement carries ``link_sdf`` — an inline
+      trunk+canopy `<link>` with per-instance color/size jitter. The SDF
+      builder packs these into tile compound models so the scene renders with
+      no external dependencies.
+    - ``'fuel'``: each placement carries ``fuel_include_sdf`` — a top-level
+      `<include>` of ``model://tree_fuel_<variant>`` (resolved via
+      ``GZ_SIM_RESOURCE_PATH`` to a wrapper model that pulls a real Fuel
+      mesh). The SDF builder keeps these OUT of tile compounds (SDF doesn't
+      allow `<include>` inside `<model>`) and instead emits them at world
+      scope, with a per-tile `<ref>` so level streaming still works.
     """
     if not os.path.exists(osm_filepath):
         logger.info("No OSM foliage file; skipping trees stage.")
@@ -544,14 +582,29 @@ def process_osm_trees_to_sdf(osm_filepath: str, models_dir: str, origin_wgs84: t
         variant_idx = rng.choice(pool)
         z = float(elevation_sampler(x, y)) if elevation_sampler is not None else 0.0
         link_name = f"tree_{len(placements)}"
-        placements.append({
+        placement = {
             'model_name': _variant_label(variant_idx),
             'link_name': link_name,   # unique per-instance link id inside tile model
             'variant_idx': variant_idx,
             'pose_xy': (x, y),
             'pose_z': z,
-            'link_sdf': _tree_link_sdf(link_name, (x, y, z), variant_idx),
-        })
+        }
+        if foliage_style == 'fuel':
+            # Top-level `<include>` — sdf_builder will NOT bucket this into a
+            # tile compound (SDF doesn't allow `<include>` inside `<model>`);
+            # it emits it at world scope and registers a per-tile <ref> so
+            # level streaming still culls it when the rover is far away.
+            fuel_name = f"tree_fuel_{len(placements)}"
+            placement['fuel_include_name'] = fuel_name
+            placement['fuel_include_sdf'] = _tree_fuel_include_sdf(
+                fuel_name, (x, y, z), variant_idx,
+            )
+        else:
+            # Cartoon (default): inline trunk+canopy `<link>`, color- and
+            # size-jittered per-instance. Packed into tile compound models by
+            # sdf_builder for fast scene parse on >1 km worlds.
+            placement['link_sdf'] = _tree_link_sdf(link_name, (x, y, z), variant_idx)
+        placements.append(placement)
 
     def _classify_polygon(props):
         """Return the _POLYGON_CLASSES entry matching this feature's tags,
@@ -648,11 +701,12 @@ def process_osm_trees_to_sdf(osm_filepath: str, models_dir: str, origin_wgs84: t
                 variant_pool=_VARIANT_FOREST,
             )
 
+    style_tag = "fuel-include" if foliage_style == 'fuel' else "inline"
     logger.info(
         f"OSM foliage processed: {len(placements)} trees "
         f"({point_count} mapped points, {line_count} hedgerows, "
         f"{poly_count} vegetated polygons, {veg_count} image-vegetation, "
         f"{cloud_skipped} cloud-masked, {out_of_world_skipped} outside-world) "
-        f"across {TREE_VARIANTS} inline variants"
+        f"across {TREE_VARIANTS} {style_tag} variants"
     )
     return placements

@@ -72,6 +72,7 @@ def run_generate_world(
     max_heightmap_size=1025,
     performer_ref='rovermax',
     disable_level_streaming=False,
+    foliage_style='cartoon',
     progress=None,
 ):
     """Run the full world-generation pipeline.
@@ -248,6 +249,7 @@ def run_generate_world(
         # footprints so trunks don't land inside walls).
         satellite_texture_path=texture_cache_png,
         buildings_geojson_path=buildings_cache_path,
+        foliage_style=foliage_style,
     )
     if with_roads:
         _log("Laying down roads from OSM highways...")
@@ -296,6 +298,7 @@ def run_generate_world(
         terrain_z_offset=terrain_z_offset,
         performer_ref=performer_ref,
         enable_level_streaming=not disable_level_streaming,
+        foliage_style=foliage_style,
     )
     builder.save_sdf_world_file(sdf_content, output_sdf_world_path)
 
@@ -377,12 +380,27 @@ def cli(ctx, debug):
                    'Result: every tile is loaded at all times (faster to reach a valid '
                    'scene if the performer never spawns; slower full-world loads). Keep '
                    'streaming on for the 3090 + city-scale workflow.')
+@click.option('--foliage-style',
+              type=click.Choice(['cartoon', 'fuel'], case_sensitive=False),
+              default='cartoon',
+              help='Tree/foliage rendering. "cartoon" (default): inline primitives '
+                   '(trunk cylinder + canopy spheres/cones) baked into each tile '
+                   'compound — no external deps, highest per-instance visual diversity '
+                   'via per-tree color/size jitter. "fuel": emit each tree as a '
+                   'top-level `<include>` of `model://tree_fuel_<variant>` (resolved '
+                   'against GZ_SIM_RESOURCE_PATH), so the committed `models_fuel/` '
+                   'wrappers can pull real meshes from Gazebo Fuel '
+                   '(OpenRobotics/Oak tree + Pine Tree). Fuel downloads land in '
+                   '~/.gz/fuel/ (persisted by the gz-cache docker volume on this '
+                   'workspace); trees still participate in per-tile level streaming '
+                   'via added <ref> entries.')
 @click.pass_context
 def generate_world(ctx, latitude, longitude, side_length, radius, output_dir,
                    world_name, height_amplitude, tile_provider, tile_api_key,
                    tile_zoom, tile_max_count,
                    with_roads, cloud_filter, dem_file, texture_file,
-                   max_heightmap_size, performer_ref, disable_level_streaming):
+                   max_heightmap_size, performer_ref, disable_level_streaming,
+                   foliage_style):
     """Generate a Gazebo Harmonic SDF world for a given location.
 
     Exactly one of ``--side-length`` (full side, preferred) or ``--radius``
@@ -419,6 +437,7 @@ def generate_world(ctx, latitude, longitude, side_length, radius, output_dir,
             max_heightmap_size=max_heightmap_size,
             performer_ref=performer_ref,
             disable_level_streaming=disable_level_streaming,
+            foliage_style=foliage_style.lower(),
         )
     except Exception as e:
         logger.error(f"World generation failed: {e}")

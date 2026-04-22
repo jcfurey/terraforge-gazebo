@@ -183,13 +183,32 @@
     {% endif %}
 
     <!-- ── Static scene as tiled compound models ─────────────────────────
-         All buildings, trees, and roads are bucketed into 200 m × 200 m
-         tile models, each containing the unique links that fall inside
-         its extent. When level streaming is on (below), only the tiles
-         near the rover get loaded. -->
-    {% for tile in scene_tiles %}
+         All buildings, trees (cartoon mode), and roads are bucketed into
+         200 m × 200 m tile models, each containing the unique links that
+         fall inside its extent. When level streaming is on (below), only
+         the tiles near the rover get loaded.
+
+         Fuel-mode trees are NOT in these compounds — SDF's `<include>`
+         is invalid inside `<model>`, so fuel trees are emitted as
+         top-level includes below and attached to the matching tile's
+         `<level>` via extra `<ref>` entries so streaming still culls
+         them with their tile. -->
+    {% for tile in scene_tiles if tile.has_compound_model %}
 {{ tile.model_sdf }}
     {% endfor %}
+
+    {% if fuel_tree_includes_sdf %}
+    <!-- ── Fuel-mode trees (top-level includes) ──────────────────────────
+         Emitted only when `--foliage-style fuel` was passed to
+         `terraforge generate-world`. Each `<include>` resolves
+         `model://tree_fuel_<variant>` against `GZ_SIM_RESOURCE_PATH` —
+         the workspace-committed `models_fuel/` wrappers, which in turn
+         `<include>` real Gazebo Fuel meshes (OpenRobotics/Oak tree +
+         Pine Tree). Fuel downloads land in `~/.gz/fuel/` which is
+         bind-mounted from the `gz-cache` docker volume on this
+         workspace, so they persist across container restarts. -->
+{{ fuel_tree_includes_sdf }}
+    {% endif %}
 
     {% if enable_level_streaming %}
     <!-- ── Performer placeholder ─────────────────────────────────────────
@@ -260,7 +279,12 @@
           </box>
         </geometry>
         <buffer>{{ level_buffer_m }}</buffer>
+        {% if tile.has_compound_model %}
         <ref>{{ tile.tile_id }}</ref>
+        {% endif %}
+        {% for tree_name in tile.fuel_tree_names %}
+        <ref>{{ tree_name }}</ref>
+        {% endfor %}
       </level>
       {% endfor %}
     </plugin>
