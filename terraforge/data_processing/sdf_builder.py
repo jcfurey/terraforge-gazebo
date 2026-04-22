@@ -11,20 +11,19 @@ from terraforge.utils.logging import logger
 # main lever for world-load time on >1 km scenes.
 DEFAULT_TILE_SIZE_M = 200.0
 
-# Active radius (metres) the tile streamer keeps tiles loaded within. Tiles
-# whose centres are farther than this from the performer are teleported to
-# DEFAULT_LEVEL_HIDDEN_Z so their render + physics cost disappears. Fog in
-# <scene> is tuned to hide the boundary; keep active_radius ≳ fog end.
+# Max distance from the performer (metres) at which a tile should stay
+# loaded. Tiles farther than this get culled by gz-sim's level manager
+# (which requires `gz sim --levels` — see the <plugin filename="dummy">
+# block in world_template.sdf.j2 for the mechanics). Each per-level
+# <buffer> actually emitted to SDF is derived as max(0, active_radius -
+# tile_size/2) so a rover within active_radius of any tile's centre
+# lands inside that level's extended AABB. Tune against fog end in
+# <scene> to hide the activation boundary.
 DEFAULT_LEVEL_ACTIVE_RADIUS_M = 300.0
 
-# Z depth (metres) to park hidden tiles at. Must be well below any
-# possible driving surface so the teleported tiles don't occlude the
-# rover. -10000 m is far past any reasonable world.
-DEFAULT_LEVEL_HIDDEN_Z = -10000.0
-
-# Default performer model name that the streamer tracks. ros_gz_sim::create
-# spawns the rover with name=$ROBOT_NAME, which is "rovermax" in this
-# workspace. Override via CLI if your model has a different name.
+# Default performer model name that the level manager tracks. ros_gz_sim's
+# `create` spawns the rover with name=$ROBOT_NAME, which is "rovermax" in
+# this workspace. Override via CLI if your model has a different name.
 DEFAULT_PERFORMER_REF = "rovermax"
 
 
@@ -136,18 +135,24 @@ class SDFWorldBuilder:
                               terrain_z_offset=0.0,
                               tile_size_m=DEFAULT_TILE_SIZE_M,
                               level_active_radius_m=DEFAULT_LEVEL_ACTIVE_RADIUS_M,
-                              level_hidden_z=DEFAULT_LEVEL_HIDDEN_Z,
                               performer_ref=DEFAULT_PERFORMER_REF,
                               enable_level_streaming=True):
         half_extent_m = extent_meters / 2.0
         scene_tiles = build_scene_tiles(
             buildings, trees, roads, half_extent_m, tile_size_m=tile_size_m,
         )
+        # Native gz-sim <level> uses an AABB + <buffer> for hysteresis.
+        # Keep the "active radius" arg as the caller-facing knob (max
+        # distance from tile centre at which it should load) and derive
+        # the per-level buffer from it.
+        level_buffer_m = max(0.0, level_active_radius_m - tile_size_m / 2.0)
         if enable_level_streaming and scene_tiles:
             logger.info(
-                f"Tile streamer plugin enabled: performer '{performer_ref}', "
-                f"active radius {level_active_radius_m:.0f} m, "
-                f"{len(scene_tiles)} tile(s)"
+                f"Native level streaming enabled: performer '{performer_ref}', "
+                f"active radius {level_active_radius_m:.0f} m "
+                f"(buffer {level_buffer_m:.0f} m around "
+                f"{tile_size_m:.0f} m tiles), {len(scene_tiles)} tile(s). "
+                f"Launch with `gz sim --levels`."
             )
         template = self.template_env.get_template('world_template.sdf.j2')
         rendered_sdf = template.render(
@@ -160,7 +165,7 @@ class SDFWorldBuilder:
             terrain_z_offset=terrain_z_offset,
             enable_level_streaming=enable_level_streaming,
             level_active_radius_m=level_active_radius_m,
-            level_hidden_z=level_hidden_z,
+            level_buffer_m=level_buffer_m,
             performer_ref=performer_ref,
         )
         logger.info("SDF world template rendered.")

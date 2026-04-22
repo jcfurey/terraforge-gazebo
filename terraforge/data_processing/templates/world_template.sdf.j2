@@ -192,23 +192,54 @@
     {% endfor %}
 
     {% if enable_level_streaming %}
-    <!-- ── Tile streaming via custom plugin ──────────────────────────────
-         SDFormat's native <level>/<performer> tags only take effect in
-         distributed-simulation mode and are silently dropped by our
-         single-process launch. Instead, gz_tile_streamer::TileStreamer
-         watches the performer model's pose every tick and teleports
-         out-of-range tile_X_Y models to z={{ level_hidden_z }} m so they
-         fall out of the render + physics active set. Fog in <scene>
-         masks the activation boundary so tiles popping in at the edge
-         fade from haze into detail. Requires:
-             colcon build --packages-select gz_tile_streamer
-         and GZ_SIM_SYSTEM_PLUGIN_PATH must include install/lib. -->
-    <plugin filename='gz_tile_streamer' name='gz_tile_streamer::TileStreamer'>
-      <performer_model>{{ performer_ref }}</performer_model>
-      <tile_prefix>tile_</tile_prefix>
-      <active_radius_m>{{ level_active_radius_m }}</active_radius_m>
-      <hidden_z>{{ level_hidden_z }}</hidden_z>
-      <update_rate_hz>10</update_rate_hz>
+    <!-- ── Native gz-sim level streaming ─────────────────────────────────
+         SDFormat <level>/<performer> elements DO work in single-process
+         gz-sim 8, but only when:
+           (a) the world is launched with `gz sim --levels` (off by
+               default — SimulationRunner gates LevelManager on
+               ServerConfig::UseLevels(), which is only true when the
+               CLI flag or `--network-role` is set), AND
+           (b) the performer/level definitions sit inside a
+               <plugin name="gz::sim" filename="dummy"> block (the literal
+               `dummy` filename is load-bearing: gz-sim's SDF parser
+               extracts the <performer>/<level> children out of this
+               plugin block before rejecting the fake library).
+         Once both hold, LevelManager::UnloadInactiveEntities calls
+         ecm.RequestRemoveEntity on every entity in a level when no
+         performer's bounding volume intersects the level's AABB + buffer
+         — the same mechanism our retired gz_tile_streamer hand-rolled.
+
+         <buffer> is the hysteresis margin (metres) extending each level's
+         AABB. A performer entering the extended box loads the level; it
+         unloads only after the performer exits the base AABB. Set buffer
+         generously to avoid load/unload thrashing when the rover drives
+         parallel to a tile edge.
+
+         Fog in <scene> masks the activation boundary so tiles popping
+         in at the edge fade from haze into detail. The rover and any
+         world-scope props (ground_plane, terrain visual, lights) stay
+         in the implicit `default` level and are always loaded. -->
+    <plugin name="gz::sim" filename="dummy">
+      <performer name="perf_{{ performer_ref }}">
+        <ref>{{ performer_ref }}</ref>
+        <geometry>
+          <box>
+            <size>2 2 2</size>
+          </box>
+        </geometry>
+      </performer>
+      {% for tile in scene_tiles %}
+      <level name="level_{{ tile.tile_id }}">
+        <pose>{{ tile.center_x }} {{ tile.center_y }} 0 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>{{ tile.size_xy }} {{ tile.size_xy }} 1000</size>
+          </box>
+        </geometry>
+        <buffer>{{ level_buffer_m }}</buffer>
+        <ref>{{ tile.tile_id }}</ref>
+      </level>
+      {% endfor %}
     </plugin>
     {% endif %}
 
