@@ -21,7 +21,9 @@ Beta. Packaged as an **ament_python** ROS 2 package called `terraforge_gazebo`, 
 - **Real-world data**:
   - SRTM DEM via the `elevation` PyPI package → 16-bit PNG heightmap, resampled to Ogre2-valid `2^n+1` dimensions, vertically shifted so the world origin sits at real ground elevation.
   - OSM **buildings** via `osmnx` → per-building Gazebo models with SDF `<polyline>` footprint visuals + bbox collisions, height inferred from OSM tags, color by `building=*` category, base Z sampled from the DEM so buildings sit on slopes.
-  - OSM **foliage** (`natural=tree`, `natural=wood`, `landuse=forest`) → trunk-cylinder + sphere-canopy tree instances, scattered inside forest polygons at a reproducible seeded density (clipped to the world bbox, capped at 200).
+  - OSM **foliage** (`natural=tree|tree_row|wood|scrub|heath`, `landuse=forest|orchard|vineyard`, `leisure=park|garden`) → trunk-cylinder + sphere-canopy tree instances, scattered inside forest polygons at a reproducible seeded density (clipped to the world bbox).
+  - **RGB + OSM foliage mask** *(default `--foliage-mask rgb-osm`)* — combines an ExcessGreen (EXG) canopy detector on the satellite texture with the OSM vegetation polygons above (additive), minus buildings, buffered roads, and parking lots, so trees scatter on genuine canopy without landing on asphalt, rooftops, or lawns. `--foliage-mask off` falls back to the legacy bare-EXG heuristic.
+  - **Two foliage rendering styles** *(`--foliage-style`)* — `cartoon` *(default)*: inline trunk+canopy primitives baked into each tile compound, no external deps. `fuel`: emit each tree as a top-level `<include>` of `model://tree_fuel_<variant>` backed by Gazebo Fuel meshes (Oak / Pine Tree); wrappers must be reachable via `GZ_SIM_RESOURCE_PATH` or a `models_fuel/` subdir of the output world, and the CLI warns up front if any are missing.
   - OSM **roads** *(opt-in, `--with-roads`)* → `highway=*` LineStrings buffered by per-class width into flat asphalt polyline ribbons.
   - **Cloud masking** on the satellite imagery — drops asset placements whose pixel looks cloud-like (high luminance + low saturation + morphological opening to dismiss small false-positive blobs like bright rooftops).
 - **Seven satellite tile providers** with a registry (`esri`, `sentinel2`, `usgs_naip`, `gibs_bluemarble`, `mapbox`, `maptiler`, `bing`). Esri is the recommended keyless default. Mosaics are precision-cropped to the exact user bbox before saving.
@@ -150,7 +152,7 @@ Attribution is emitted as a log line per generation run; include it when publish
 
 ## Modules
 
-- `terraforge.cli` — `click`-based CLI. Exposes `run_generate_world()` for programmatic use (e.g. from the GUI or a wrapper script). Flags: `--tile-provider`, `--tile-api-key`, `--height-amplitude`, `--with-roads` / `--no-roads`, `--cloud-filter` / `--no-cloud-filter`.
+- `terraforge.cli` — `click`-based CLI. Exposes `run_generate_world()` for programmatic use (e.g. from the GUI or a wrapper script). Flags include `--tile-provider`, `--tile-api-key`, `--tile-zoom`, `--tile-max-count`, `--height-amplitude`, `--max-heightmap-size`, `--with-roads` / `--no-roads`, `--cloud-filter` / `--no-cloud-filter`, `--dem-file` (override SRTM with a user-supplied DEM), `--texture-file` (override tiles with a user-supplied orthophoto), `--performer-ref` (level-streaming performer name), `--disable-level-streaming`, `--foliage-style cartoon|fuel`, and `--foliage-mask off|rgb-osm|worldcover`. Transient network failures (SRTM/Overpass/tile server) are retried with exponential backoff.
 - `terraforge.data_acquisition`
   - `elevation.py` — SRTM DEM download, **UTM-correct** WGS84 bbox, and WGS84→UTM reprojection (`reproject_dem_to_utm`) onto a true meter-square Ogre2-valid grid.
   - `osm.py` — buildings / foliage / roads downloaders (all `osmnx.features_from_bbox`).

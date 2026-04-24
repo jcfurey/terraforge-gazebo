@@ -1,11 +1,15 @@
-click>=8.0
-elevation>=1.1
+click>=8.0,<9
+elevation>=1.1,<2
 geocoder>=1.38
+# GDAL is intentionally unpinned here. `pip install GDAL` needs matching
+# libgdal-dev headers and is fragile; prefer rosdep-resolved python3-gdal
+# (ROS 2 Jazzy) or conda-forge `gdal`. If pip-installing, match your
+# system libgdal version: `pip install GDAL==$(gdal-config --version)`.
 GDAL
-Jinja2>=3.0
-osmnx>=2.0
-Pillow>=10.0
-PyQt6>=6.6
-pyproj>=3.6
-requests>=2.31
-shapely>=2.0
+Jinja2>=3.0,<4
+osmnx>=2.0,<3
+Pillow>=10.0,<12
+PyQt6>=6.6,<7
+pyproj>=3.6,<4
+requests>=2.31,<3
+shapely>=2.0,<3
