@@ -3,6 +3,7 @@ import math
 from jinja2 import Environment, FileSystemLoader
 
 from terraforge.utils.logging import logger
+from terraforge.utils.naming import safe_identifier
 
 
 # Tile size for the compound static scene. Buildings and trees are grouped
@@ -193,6 +194,10 @@ class SDFWorldBuilder:
                               performer_ref=DEFAULT_PERFORMER_REF,
                               enable_level_streaming=True,
                               foliage_style='cartoon'):
+        # performer_ref is interpolated into <model name>, <performer name>,
+        # and <ref> elements in world_template.sdf.j2 without XML escaping.
+        # Reject anything that would break SDF parsing.
+        performer_ref = safe_identifier(performer_ref, field='performer_ref')
         half_extent_m = extent_meters / 2.0
         scene_tiles = build_scene_tiles(
             buildings, trees, roads, half_extent_m, tile_size_m=tile_size_m,

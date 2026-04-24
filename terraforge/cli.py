@@ -20,6 +20,7 @@ from terraforge.data_processing import (
 from terraforge.utils.config import config
 from terraforge.utils.coordinates import CoordinateConverter
 from terraforge.utils.logging import setup_logger
+from terraforge.utils.naming import safe_identifier
 
 logger = setup_logger('terraforge')
 
@@ -88,6 +89,13 @@ def run_generate_world(
         logger.info(msg)
         if progress is not None:
             progress(msg)
+
+    # Validate identifiers that flow into filesystem paths and SDF XML
+    # before we mkdir anything or hit the network. world_name becomes a
+    # directory suffix and a `file://` URI; performer_ref is interpolated
+    # directly into SDF <model>/<performer>/<ref> names.
+    world_name = safe_identifier(world_name, field='world_name')
+    performer_ref = safe_identifier(performer_ref, field='performer_ref')
 
     origin_location = (latitude, longitude)
     # Cache key includes radius — the WGS84 bbox depends on it, and a cache
@@ -477,6 +485,11 @@ def generate_world(ctx, latitude, longitude, side_length, radius, output_dir,
             f"--max-heightmap-size must be one of "
             f"{elevation_processor._OGRE2_VALID_SIZES}; got {max_heightmap_size}."
         )
+    try:
+        world_name = safe_identifier(world_name, field='--world-name')
+        performer_ref = safe_identifier(performer_ref, field='--performer-ref')
+    except ValueError as e:
+        raise click.UsageError(str(e))
     try:
         run_generate_world(
             latitude=latitude,
