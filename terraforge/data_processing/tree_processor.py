@@ -279,6 +279,106 @@ def fuel_wrapper_model_names() -> list:
     return [f"tree_fuel_{i}" for i in range(TREE_VARIANTS)]
 
 
+def _fuel_wrapper_sdf(name: str, variant_idx: int) -> str:
+    """Return a minimal, self-contained wrapper SDF for one fuel variant.
+
+    The wrapper is intentionally a small set of primitive shapes that
+    roughly matches the variant's cartoon counterpart. gz-sim parses
+    the URI once and GPU-instances every `<include>model://...</include>`
+    that references it, which is the point of fuel mode over cartoon —
+    2000 tree instances cost the renderer 5 unique meshes, not 2000
+    unique inline links. Each wrapper is static and collision-free.
+    """
+    trunk_h, trunk_r, canopy_half_h, canopy_r, shape = _TREE_VARIANT_CONFIGS[variant_idx]
+    # Pick a representative color per shape class. Fuel wrappers are
+    # variant-uniform by design — per-instance variety is cartoon's job.
+    palette = _CANOPY_COLORS.get(shape, _CANOPY_COLORS['broadleaf'])
+    r, g, b = palette[0]
+    tr, tg, tb = _TRUNK_COLORS[0]
+    half_trunk = trunk_h / 2.0
+    canopy_z = trunk_h + canopy_half_h
+    if shape == 'conifer':
+        canopy_visual = (
+            f"        <geometry><cone>"
+            f"<radius>{canopy_r:.3f}</radius>"
+            f"<length>{2 * canopy_half_h:.3f}</length>"
+            f"</cone></geometry>"
+        )
+    else:
+        canopy_visual = (
+            f"        <geometry><sphere>"
+            f"<radius>{canopy_r:.3f}</radius>"
+            f"</sphere></geometry>"
+        )
+    return f"""<?xml version='1.0'?>
+<sdf version='1.10'>
+  <model name='{name}'>
+    <static>true</static>
+    <link name='body'>
+      <visual name='trunk'>
+        <pose>0 0 {half_trunk:.3f} 0 0 0</pose>
+        <geometry><cylinder>
+          <radius>{trunk_r:.3f}</radius>
+          <length>{trunk_h:.3f}</length>
+        </cylinder></geometry>
+        <material>
+          <ambient>{tr} {tg} {tb} 1</ambient>
+          <diffuse>{tr} {tg} {tb} 1</diffuse>
+        </material>
+      </visual>
+      <visual name='canopy'>
+        <pose>0 0 {canopy_z:.3f} 0 0 0</pose>
+{canopy_visual}
+        <material>
+          <ambient>{r} {g} {b} 1</ambient>
+          <diffuse>{r} {g} {b} 1</diffuse>
+        </material>
+      </visual>
+    </link>
+  </model>
+</sdf>
+"""
+
+
+def _fuel_wrapper_config(name: str) -> str:
+    return f"""<?xml version='1.0'?>
+<model>
+  <name>{name}</name>
+  <version>1.0</version>
+  <sdf version='1.10'>model.sdf</sdf>
+  <description>TerraForge-generated fuel wrapper for {name}.</description>
+</model>
+"""
+
+
+def write_fuel_wrappers(dest_dir: str) -> list:
+    """Write minimal wrapper model dirs for every fuel variant under
+    ``dest_dir`` (one ``tree_fuel_<i>/model.sdf`` + ``model.config`` per
+    variant). Returns the list of wrapper names written.
+
+    Idempotent — existing wrappers are left alone so a user-supplied
+    pack that appears earlier on ``GZ_SIM_RESOURCE_PATH`` continues to
+    take precedence. The output world's launch file adds ``dest_dir``
+    to that path automatically (see ``launch/spawn_world.launch.py``).
+    """
+    os.makedirs(dest_dir, exist_ok=True)
+    written = []
+    for variant_idx in range(TREE_VARIANTS):
+        name = f"tree_fuel_{variant_idx}"
+        model_dir = os.path.join(dest_dir, name)
+        sdf_path = os.path.join(model_dir, 'model.sdf')
+        cfg_path = os.path.join(model_dir, 'model.config')
+        if os.path.isfile(sdf_path):
+            continue
+        os.makedirs(model_dir, exist_ok=True)
+        with open(sdf_path, 'w') as f:
+            f.write(_fuel_wrapper_sdf(name, variant_idx))
+        with open(cfg_path, 'w') as f:
+            f.write(_fuel_wrapper_config(name))
+        written.append(name)
+    return written
+
+
 def missing_fuel_wrappers(extra_roots: list = None) -> list:
     """Return the subset of fuel wrapper model names not found on disk.
 

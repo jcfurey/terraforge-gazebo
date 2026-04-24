@@ -104,22 +104,27 @@ def run_generate_world(
         )
 
     # Fuel mode emits <include><uri>model://tree_fuel_<i></uri></include>.
-    # If the wrappers aren't reachable via GZ_SIM_RESOURCE_PATH (or the
-    # per-world models_fuel/ subdir), gz-sim silently drops the trees.
-    # Check up front and warn loudly so the operator knows to set the
-    # path before launching the world.
+    # Auto-generate minimal wrappers into <output>/models_fuel/ so the
+    # world is self-contained. spawn_world.launch.py adds that dir to
+    # GZ_SIM_RESOURCE_PATH; if the operator has a richer wrapper pack
+    # earlier on the path (e.g. mesh-backed fuel trees in a bringup
+    # workspace), it takes precedence because write_fuel_wrappers only
+    # writes files that don't already exist.
     if foliage_style == 'fuel':
-        extra_roots = [os.path.join(os.path.abspath(output_dir), 'models_fuel')]
-        missing = tree_processor.missing_fuel_wrappers(extra_roots=extra_roots)
+        models_fuel_dir = os.path.join(os.path.abspath(output_dir), 'models_fuel')
+        written = tree_processor.write_fuel_wrappers(models_fuel_dir)
+        if written:
+            logger.info(
+                f"--foliage-style fuel: wrote {len(written)} wrapper model(s) "
+                f"to {models_fuel_dir} ({', '.join(written)}). Launch will "
+                f"add this dir to GZ_SIM_RESOURCE_PATH."
+            )
+        missing = tree_processor.missing_fuel_wrappers(extra_roots=[models_fuel_dir])
         if missing:
             logger.warning(
-                "--foliage-style fuel: wrapper model(s) "
-                f"{missing} not found on GZ_SIM_RESOURCE_PATH "
-                f"(or in {extra_roots[0]}). Gazebo will fail to resolve "
-                f"the matching model:// URIs and trees of those variants "
-                f"will be missing. Either set GZ_SIM_RESOURCE_PATH to a "
-                f"directory containing tree_fuel_<i>/model.sdf, or drop "
-                f"back to --foliage-style cartoon."
+                f"--foliage-style fuel: still missing {missing} even after "
+                f"writing defaults; check filesystem permissions on "
+                f"{models_fuel_dir}."
             )
 
     origin_location = (latitude, longitude)

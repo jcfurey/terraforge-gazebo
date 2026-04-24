@@ -13,10 +13,19 @@ from launch_ros.substitutions import FindPackageShare
 
 
 def _resource_path(context: LaunchContext, *args, **kwargs):
+    # Put per-world dirs first so any tree_fuel_* wrappers bundled by
+    # `terraforge generate-world` resolve from this world's own
+    # models_fuel/ without the user setting GZ_SIM_RESOURCE_PATH. A
+    # bringup workspace with richer mesh-backed wrappers can appear
+    # earlier by exporting GZ_SIM_RESOURCE_PATH before launch — existing
+    # values still take precedence via the prepend order below.
     world = LaunchConfiguration('world').perform(context)
-    models_dir = os.path.join(os.path.dirname(os.path.abspath(world)), 'models')
+    world_dir = os.path.dirname(os.path.abspath(world))
+    models_dir = os.path.join(world_dir, 'models')
+    models_fuel_dir = os.path.join(world_dir, 'models_fuel')
     existing = os.environ.get('GZ_SIM_RESOURCE_PATH', '')
-    combined = ':'.join(p for p in (models_dir, existing) if p)
+    parts = [p for p in (existing, models_dir, models_fuel_dir) if p]
+    combined = ':'.join(parts)
     return [SetEnvironmentVariable('GZ_SIM_RESOURCE_PATH', combined)]
 
 

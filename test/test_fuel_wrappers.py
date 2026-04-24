@@ -20,6 +20,7 @@ from terraforge.data_processing.tree_processor import (  # noqa: E402
     TREE_VARIANTS,
     fuel_wrapper_model_names,
     missing_fuel_wrappers,
+    write_fuel_wrappers,
 )
 
 
@@ -71,3 +72,44 @@ def test_gz_sim_resource_path_colon_separated(tmp_path, monkeypatch):
 
 def test_wrapper_count_matches_tree_variants():
     assert len(fuel_wrapper_model_names()) == TREE_VARIANTS
+
+
+def test_write_fuel_wrappers_populates_dir(tmp_path, monkeypatch):
+    monkeypatch.delenv('GZ_SIM_RESOURCE_PATH', raising=False)
+    dest = tmp_path / 'models_fuel'
+    written = write_fuel_wrappers(str(dest))
+    assert set(written) == set(fuel_wrapper_model_names())
+    # Every wrapper has a valid-looking model.sdf + model.config.
+    for name in fuel_wrapper_model_names():
+        sdf = dest / name / 'model.sdf'
+        cfg = dest / name / 'model.config'
+        assert sdf.is_file()
+        assert cfg.is_file()
+        content = sdf.read_text()
+        assert '<sdf' in content
+        assert f"<model name='{name}'>" in content
+        assert '<static>true</static>' in content
+    # After writing, nothing is missing.
+    assert missing_fuel_wrappers(extra_roots=[str(dest)]) == []
+
+
+def test_write_fuel_wrappers_is_idempotent(tmp_path, monkeypatch):
+    monkeypatch.delenv('GZ_SIM_RESOURCE_PATH', raising=False)
+    dest = tmp_path / 'models_fuel'
+    write_fuel_wrappers(str(dest))
+    # Second call should write nothing (existing files are untouched).
+    second = write_fuel_wrappers(str(dest))
+    assert second == []
+
+
+def test_write_fuel_wrappers_preserves_user_overrides(tmp_path, monkeypatch):
+    monkeypatch.delenv('GZ_SIM_RESOURCE_PATH', raising=False)
+    dest = tmp_path / 'models_fuel'
+    # Pre-create one wrapper with distinctive content — the user's own
+    # richer mesh-backed wrapper.
+    (dest / 'tree_fuel_2').mkdir(parents=True)
+    (dest / 'tree_fuel_2' / 'model.sdf').write_text('<sdf>USER_CUSTOM</sdf>')
+    write_fuel_wrappers(str(dest))
+    # User's file stayed intact; others were filled in.
+    assert (dest / 'tree_fuel_2' / 'model.sdf').read_text() == '<sdf>USER_CUSTOM</sdf>'
+    assert (dest / 'tree_fuel_0' / 'model.sdf').is_file()
