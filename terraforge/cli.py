@@ -78,6 +78,8 @@ def run_generate_world(
     foliage_style='cartoon',
     foliage_mask_mode='rgb-osm',
     progress=None,
+    progress_percent=None,
+    cancel_flag=None,
 ):
     """Run the full world-generation pipeline.
 
@@ -85,11 +87,24 @@ def run_generate_world(
 
     `progress(msg)` is an optional callable invoked with human-readable status
     strings, so GUIs can surface progress to the user.
+    `progress_percent(int)` is an optional callable invoked with 0-100 values
+    at each pipeline stage so GUIs can drive a progress bar.
+    `cancel_flag()` is an optional callable polled between stages; if it
+    returns truthy, the pipeline raises ``InterruptedError`` and cleanly
+    aborts instead of running the rest of the pipeline.
     """
     def _log(msg):
         logger.info(msg)
         if progress is not None:
             progress(msg)
+
+    def _pct(value):
+        if progress_percent is not None:
+            progress_percent(int(value))
+
+    def _check_cancel():
+        if cancel_flag is not None and cancel_flag():
+            raise InterruptedError("World generation cancelled by user.")
 
     # Validate identifiers that flow into filesystem paths and SDF XML
     # before we mkdir anything or hit the network. world_name becomes a
@@ -158,9 +173,12 @@ def run_generate_world(
         _log(f"Using user-supplied DEM: {dem_source_path}")
     else:
         _log("Downloading SRTM3 DEM...")
+        _pct(5)
         elevation.download_dem(origin_location, radius, dem_cache_path)
+    _check_cancel()
 
     _log("Downloading OSM layers...")
+    _pct(15)
     osm.download_osm_buildings(origin_location, radius, buildings_cache_path)
     osm.download_osm_trees(origin_location, radius, trees_cache_path)
     # Roads + parking are always fetched because the foliage mask consumes
@@ -182,7 +200,9 @@ def run_generate_world(
             raise click.UsageError(f"--texture-file does not exist: {texture_user_path}")
         _log(f"Using user-supplied orthophoto: {texture_user_path}")
     else:
+        _check_cancel()
         _log("Downloading satellite tiles...")
+        _pct(25)
         textures.download_satellite_texture_tiles(
             origin_location, radius, texture_cache_dir,
             provider=tile_provider,
@@ -197,7 +217,9 @@ def run_generate_world(
 
     # DEM reprojection uses the same converter created above, so both the
     # texture and DEM share a single UTM zone.
+    _check_cancel()
     _log("Reprojecting DEM into local UTM grid...")
+    _pct(55)
     target_size = _choose_heightmap_size(dem_source_path, max_size=max_heightmap_size)
     elevation.reproject_dem_to_utm(
         dem_source_path,
@@ -231,7 +253,9 @@ def run_generate_world(
     texture_cache_png = texture_source_path  # kept for downstream name parity
     texture_output_path = os.path.join(output_textures_dir, 'satellite_texture.png')
 
+    _check_cancel()
     _log("Processing DEM into heightmap...")
+    _pct(65)
     dem_stats = elevation_processor.process_dem_to_heightmap(
         dem_utm_cache_path, heightmap_output_path
     )
@@ -311,13 +335,17 @@ def run_generate_world(
             meters_per_pixel=texture_meters_per_px,
         )
 
+    _check_cancel()
     _log("Building Gazebo models from OSM footprints...")
+    _pct(75)
     buildings = building_processor.process_osm_buildings_to_sdf(
         buildings_cache_path, output_models_dir, origin_location,
         elevation_sampler=sample_terrain_z,
         cloud_mask=cloud_mask,
     )
+    _check_cancel()
     _log("Scattering trees from OSM foliage + vegetation mask...")
+    _pct(85)
     trees = tree_processor.process_osm_trees_to_sdf(
         trees_cache_path, output_models_dir, origin_location,
         elevation_sampler=sample_terrain_z,
@@ -336,7 +364,9 @@ def run_generate_world(
         foliage_mask=foliage_mask,
     )
     if with_roads:
+        _check_cancel()
         _log("Laying down roads from OSM highways...")
+        _pct(90)
         roads = road_processor.process_osm_roads_to_sdf(
             roads_cache_path, output_models_dir, origin_location,
             elevation_sampler=sample_terrain_z,
@@ -379,7 +409,9 @@ def run_generate_world(
     if foliage_mask is not None:
         foliage_mask.save_debug_png(os.path.join(output_media_dir, 'foliage_mask.png'))
 
+    _check_cancel()
     _log("Rendering SDF world...")
+    _pct(95)
     builder = sdf_builder.SDFWorldBuilder(TEMPLATE_DIR)
     extent_meters = 2.0 * radius
     output_sdf_world_path = os.path.join(output_dir, f"{world_name}.world")
