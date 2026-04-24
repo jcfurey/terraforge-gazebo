@@ -124,16 +124,20 @@ def _jitter(h: float, rng: _random.Random) -> float:
     return h * (1.0 + rng.uniform(-_HEIGHT_JITTER, _HEIGHT_JITTER))
 
 
-def _polygon_to_polyline_link_sdf(polygon, link_name: str, pose_xyz: tuple,
+def _polygon_to_polyline_body_sdf(polygon, name_prefix: str, pose_xyz: tuple,
                                    height: float, color=(0.7, 0.7, 0.7)) -> str:
-    """Render a shapely Polygon as an inline <link> SDF fragment.
+    """Return `<collision>` + `<visual>` for a building, with poses baked
+    into each child element and element names made unique via
+    ``name_prefix``.
 
-    Used when many buildings share a single compound <model>, so each
-    building is one <link> with its own pose inside the tile model.
-    Returns just the <link>...</link> string (no enclosing <model>).
+    Designed to be dropped into a shared `<link>` that holds every static
+    body in a tile — collapses hundreds of per-building links (+ fixed
+    joints) down to a single link per tile, which is the single biggest
+    world-load speedup available without mesh baking. See
+    ``sdf_builder.build_scene_tiles`` for the assembly.
     """
     if not polygon.is_valid or polygon.geom_type != 'Polygon':
-        return _polygon_to_box_link_sdf(polygon, link_name, pose_xyz, height, color)
+        return _polygon_to_box_body_sdf(polygon, name_prefix, pose_xyz, height, color)
 
     if not polygon.exterior.is_ccw:
         polygon = shapely.geometry.polygon.orient(polygon, sign=1.0)
@@ -151,51 +155,61 @@ def _polygon_to_polyline_link_sdf(polygon, link_name: str, pose_xyz: tuple,
 
     r, g, b = color
     px, py, pz = pose_xyz
-    return f"""    <link name='{link_name}'>
-      <pose>{px:.3f} {py:.3f} {pz:.3f} 0 0 0</pose>
-      <collision name='collision'>
-        <pose>{box_cx:.3f} {box_cy:.3f} {height / 2.0:.3f} 0 0 0</pose>
-        <geometry><box><size>{box_x:.3f} {box_y:.3f} {height:.3f}</size></box></geometry>
-      </collision>
-      <visual name='visual'>
-        <geometry>
-          <polyline>
-            {pts}
-            <height>{height:.3f}</height>
-          </polyline>
-        </geometry>
-        <material>
-          <ambient>{r} {g} {b} 1</ambient>
-          <diffuse>{r} {g} {b} 1</diffuse>
-          <specular>0.1 0.1 0.1 1</specular>
-        </material>
-      </visual>
-    </link>"""
+    # Collision: axis-aligned bbox expressed in absolute world metres,
+    # centered on the building's bbox-center + half-height. Visual:
+    # polyline coords are relative to the building's pose, so we apply
+    # the pose via <visual><pose>.
+    return (
+        f"      <collision name='col_{name_prefix}'>\n"
+        f"        <pose>{px + box_cx:.3f} {py + box_cy:.3f} "
+        f"{pz + height / 2.0:.3f} 0 0 0</pose>\n"
+        f"        <geometry><box><size>{box_x:.3f} {box_y:.3f} "
+        f"{height:.3f}</size></box></geometry>\n"
+        f"      </collision>\n"
+        f"      <visual name='vis_{name_prefix}'>\n"
+        f"        <pose>{px:.3f} {py:.3f} {pz:.3f} 0 0 0</pose>\n"
+        f"        <geometry>\n"
+        f"          <polyline>\n"
+        f"            {pts}\n"
+        f"            <height>{height:.3f}</height>\n"
+        f"          </polyline>\n"
+        f"        </geometry>\n"
+        f"        <material>\n"
+        f"          <ambient>{r} {g} {b} 1</ambient>\n"
+        f"          <diffuse>{r} {g} {b} 1</diffuse>\n"
+        f"          <specular>0.1 0.1 0.1 1</specular>\n"
+        f"        </material>\n"
+        f"      </visual>"
+    )
 
 
-def _polygon_to_box_link_sdf(polygon, link_name: str, pose_xyz: tuple,
+def _polygon_to_box_body_sdf(polygon, name_prefix: str, pose_xyz: tuple,
                               height: float, color=(0.7, 0.7, 0.7)) -> str:
-    """Bounding-box fallback as a <link>. Used when polyline extrusion
-    isn't viable (multi-polygon, self-intersecting exterior, etc.)."""
+    """Bounding-box fallback body fragment. Used when polyline extrusion
+    isn't viable (multi-polygon exterior, self-intersecting, etc.)."""
     minx, miny, maxx, maxy = polygon.bounds
     size_x = max(maxx - minx, 0.1)
     size_y = max(maxy - miny, 0.1)
     r, g, b = color
     px, py, pz = pose_xyz
-    return f"""    <link name='{link_name}'>
-      <pose>{px:.3f} {py:.3f} {pz + height / 2.0:.3f} 0 0 0</pose>
-      <collision name='collision'>
-        <geometry><box><size>{size_x:.3f} {size_y:.3f} {height:.3f}</size></box></geometry>
-      </collision>
-      <visual name='visual'>
-        <geometry><box><size>{size_x:.3f} {size_y:.3f} {height:.3f}</size></box></geometry>
-        <material>
-          <ambient>{r} {g} {b} 1</ambient>
-          <diffuse>{r} {g} {b} 1</diffuse>
-          <specular>0.1 0.1 0.1 1</specular>
-        </material>
-      </visual>
-    </link>"""
+    cz = pz + height / 2.0
+    return (
+        f"      <collision name='col_{name_prefix}'>\n"
+        f"        <pose>{px:.3f} {py:.3f} {cz:.3f} 0 0 0</pose>\n"
+        f"        <geometry><box><size>{size_x:.3f} {size_y:.3f} "
+        f"{height:.3f}</size></box></geometry>\n"
+        f"      </collision>\n"
+        f"      <visual name='vis_{name_prefix}'>\n"
+        f"        <pose>{px:.3f} {py:.3f} {cz:.3f} 0 0 0</pose>\n"
+        f"        <geometry><box><size>{size_x:.3f} {size_y:.3f} "
+        f"{height:.3f}</size></box></geometry>\n"
+        f"        <material>\n"
+        f"          <ambient>{r} {g} {b} 1</ambient>\n"
+        f"          <diffuse>{r} {g} {b} 1</diffuse>\n"
+        f"          <specular>0.1 0.1 0.1 1</specular>\n"
+        f"        </material>\n"
+        f"      </visual>"
+    )
 
 
 def _polygon_to_polyline_sdf(polygon, height: float, color=(0.7, 0.7, 0.7)) -> str:
@@ -423,12 +437,12 @@ def process_osm_buildings_to_sdf(osm_filepath: str, models_dir: str, origin_wgs8
                 # OSM gave no type.
                 height = _infer_height(props, area_m2=footprint_area, rng=rng)
 
-                link_sdf = _polygon_to_polyline_link_sdf(
-                    polygon_centered, link_name=model_name,
+                body_sdf = _polygon_to_polyline_body_sdf(
+                    polygon_centered, name_prefix=model_name,
                     pose_xyz=(pose_xy[0], pose_xy[1], pose_z),
                     height=height, color=color,
                 )
-                if '<polyline>' in link_sdf:
+                if '<polyline>' in body_sdf:
                     polyline_count += 1
                 else:
                     bbox_fallback += 1
@@ -438,7 +452,7 @@ def process_osm_buildings_to_sdf(osm_filepath: str, models_dir: str, origin_wgs8
                     'link_name': model_name,
                     'pose_xy': pose_xy,
                     'pose_z': pose_z,
-                    'link_sdf': link_sdf,
+                    'body_sdf': body_sdf,
                 })
 
         logger.info(

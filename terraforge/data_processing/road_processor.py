@@ -62,14 +62,16 @@ def _sanitize(name):
     return str(name).replace(':', '_').replace('/', '_').replace(' ', '_')
 
 
-def _polygon_to_link_sdf(polygon, link_name, pose_xyz, thickness, color=ROAD_COLOR) -> str:
-    """Render a buffered road polygon as an inline <link> SDF fragment.
+def _polygon_to_body_sdf(polygon, name_prefix, pose_xyz, thickness, color=ROAD_COLOR) -> str:
+    """Return a visual-only `<visual>` fragment for a road segment, with
+    the segment pose baked in and the element name uniquified via
+    ``name_prefix``. Designed to live inside the shared per-tile
+    ``<link>`` alongside buildings — one link per tile instead of one
+    link per road segment slashes entity count at load.
 
-    Used inside the per-tile compound <model> so each road segment is
-    just one visual-only link whose pose is expressed in world metres.
-    bullet-featherstone is happy with static compounds; no collision is
-    needed because the rover rolls on the terrain heightmap, not the
-    road surface itself.
+    Roads don't emit a `<collision>` — the rover drives on the flat
+    ground plane (the heightmap has no collision in bullet-featherstone)
+    and the road surface is purely visual.
     """
     if polygon.geom_type != 'Polygon' or not polygon.is_valid or not polygon.is_simple:
         return None
@@ -81,22 +83,22 @@ def _polygon_to_link_sdf(polygon, link_name, pose_xyz, thickness, color=ROAD_COL
     pts = "\n            ".join(f"<point>{x:.3f} {y:.3f}</point>" for x, y in coords)
     r, g, b = color
     px, py, pz = pose_xyz
-    return f"""    <link name='{link_name}'>
-      <pose>{px:.3f} {py:.3f} {pz:.3f} 0 0 0</pose>
-      <visual name='visual'>
-        <geometry>
-          <polyline>
-            {pts}
-            <height>{thickness:.3f}</height>
-          </polyline>
-        </geometry>
-        <material>
-          <ambient>{r} {g} {b} 1</ambient>
-          <diffuse>{r} {g} {b} 1</diffuse>
-          <specular>0.05 0.05 0.05 1</specular>
-        </material>
-      </visual>
-    </link>"""
+    return (
+        f"      <visual name='vis_{name_prefix}'>\n"
+        f"        <pose>{px:.3f} {py:.3f} {pz:.3f} 0 0 0</pose>\n"
+        f"        <geometry>\n"
+        f"          <polyline>\n"
+        f"            {pts}\n"
+        f"            <height>{thickness:.3f}</height>\n"
+        f"          </polyline>\n"
+        f"        </geometry>\n"
+        f"        <material>\n"
+        f"          <ambient>{r} {g} {b} 1</ambient>\n"
+        f"          <diffuse>{r} {g} {b} 1</diffuse>\n"
+        f"          <specular>0.05 0.05 0.05 1</specular>\n"
+        f"        </material>\n"
+        f"      </visual>"
+    )
 
 
 def process_osm_roads_to_sdf(osm_filepath: str, models_dir: str, origin_wgs84: tuple,
@@ -220,11 +222,11 @@ def _emit_road_segments(line_local, half_w, base_name, comp_idx,
             pose_z = ROAD_THICKNESS / 2.0
 
         link_name = f"{base_name}_c{comp_idx}_s{seg_idx}"
-        link_sdf = _polygon_to_link_sdf(
+        body_sdf = _polygon_to_body_sdf(
             poly_centered, link_name, (pose_xy[0], pose_xy[1], pose_z),
             ROAD_THICKNESS,
         )
-        if link_sdf is None:
+        if body_sdf is None:
             continue
 
         _segment_placements.append({
@@ -232,7 +234,7 @@ def _emit_road_segments(line_local, half_w, base_name, comp_idx,
             'link_name': link_name,
             'pose_xy': pose_xy,
             'pose_z': pose_z,
-            'link_sdf': link_sdf,
+            'body_sdf': body_sdf,
         })
         emitted += 1
     return emitted

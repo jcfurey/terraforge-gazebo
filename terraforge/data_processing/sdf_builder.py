@@ -52,11 +52,14 @@ def _tile_index(pose_xy, half_extent_m, tile_size_m):
 
 def _group_placements_into_tiles(placements, half_extent_m, tile_size_m):
     """Bucket placements into a dict keyed by (tx, ty); each value is a list
-    of {'link_sdf': ...} items. Placements lacking 'link_sdf' are skipped
-    (legacy callers that didn't emit inline SDF)."""
+    of placement items. Placements must carry either ``body_sdf`` (a
+    visual/collision fragment that will live inside a shared per-tile
+    link) or ``link_sdf`` (a full ``<link>`` that becomes its own link
+    in the tile compound). Items without either are skipped.
+    """
     tiles = {}
     for p in placements or []:
-        if 'link_sdf' not in p or p['link_sdf'] is None:
+        if p.get('body_sdf') is None and p.get('link_sdf') is None:
             continue
         tx, ty, _n = _tile_index(p['pose_xy'], half_extent_m, tile_size_m)
         tiles.setdefault((tx, ty), []).append(p)
@@ -100,45 +103,73 @@ def build_scene_tiles(buildings, trees, roads, half_extent_m,
     all_tile_keys = sorted(set(tiles_map.keys()) | set(fuel_tree_tile_map.keys()))
 
     tile_records = []
+    total_body_items = 0
+    total_own_links = 0
     for (tx, ty) in all_tile_keys:
         tile_id = f"tile_{tx}_{ty}"
         items = tiles_map.get((tx, ty), [])
         fuel_tree_names = fuel_tree_tile_map.get((tx, ty), [])
-        # bullet-featherstone requires every link in a model to be connected
-        # into a single kinematic tree via joints. A static compound tile
-        # with N disconnected links fails validation ("Multiple sub-trees /
-        # floating links detected") and the engine silently drops all but
-        # one link — breaking collision for every other building/tree.
-        # Fix: emit an empty root link and a fixed joint tying each content
-        # link to it. Zero DOF, zero dynamics cost, passes validation.
-        # Note: SDFormat reserves names with leading/trailing double
-        # underscores; use plain names so the parser accepts them.
-        root_name = f"{tile_id}_root"
-        root_link = f"    <link name='{root_name}'></link>"
-        if items:
-            links_sdf = "\n".join(item['link_sdf'] for item in items)
-            joints_sdf = "\n".join(
-                f"    <joint name='j_{item['link_name']}' type='fixed'>\n"
-                f"      <parent>{root_name}</parent>\n"
-                f"      <child>{item['link_name']}</child>\n"
-                f"    </joint>"
-                for item in items
+        # Split placements into:
+        #   * body-style items (buildings, roads) — visuals/collisions
+        #     get merged into a single shared link per tile.
+        #   * link-style items (cartoon trees) — keep their own <link>
+        #     so per-tree yaw + multiple primitive visuals can use the
+        #     link's <pose> without repeating the rotation math.
+        body_items = [i for i in items if i.get('body_sdf')]
+        own_link_items = [i for i in items if i.get('body_sdf') is None
+                          and i.get('link_sdf')]
+        total_body_items += len(body_items)
+        total_own_links += len(own_link_items)
+
+        # bullet-featherstone requires every link in a model to be
+        # connected into a single kinematic tree via joints (a model
+        # with multiple floating links fails validation with "Multiple
+        # sub-trees / floating links detected" and the engine silently
+        # drops all but one link). A single-link model is trivially
+        # valid, so body_items all go into one shared link with no
+        # joint. own_link_items each need a fixed joint to the shared
+        # link. Note: SDFormat reserves names with leading/trailing
+        # double underscores — plain names only.
+        bodies_link_name = f"{tile_id}_bodies"
+        model_parts = []
+        if body_items:
+            body_sdf = "\n".join(i['body_sdf'] for i in body_items)
+            model_parts.append(
+                f"    <link name='{bodies_link_name}'>\n"
+                f"{body_sdf}\n"
+                f"    </link>"
             )
-            # <static>true</static> mandatory — compound tile is a terrain prop.
-            # Single pose at origin; each link carries its own world-relative pose.
+        elif own_link_items:
+            # No body items but we still need a root for cartoon trees
+            # to joint onto. Emit an empty placeholder link.
+            model_parts.append(f"    <link name='{bodies_link_name}'></link>")
+
+        if own_link_items:
+            model_parts.append(
+                "\n".join(i['link_sdf'] for i in own_link_items)
+            )
+            model_parts.append("\n".join(
+                f"    <joint name='j_{i['link_name']}' type='fixed'>\n"
+                f"      <parent>{bodies_link_name}</parent>\n"
+                f"      <child>{i['link_name']}</child>\n"
+                f"    </joint>"
+                for i in own_link_items
+            ))
+
+        if body_items or own_link_items:
+            # <static>true</static> mandatory — compound tile is a
+            # terrain prop; no physics.
             model_sdf = (
                 f"  <model name='{tile_id}'>\n"
                 f"    <static>true</static>\n"
                 f"    <pose>0 0 0 0 0 0</pose>\n"
-                f"{root_link}\n"
-                f"{links_sdf}\n"
-                f"{joints_sdf}\n"
-                f"  </model>"
+                + "\n".join(model_parts)
+                + "\n  </model>"
             )
         else:
-            # Fuel-only tile — no inline links, so no compound model needed.
-            # We still emit a record so the level block below gets a <ref> for
-            # the tile's fuel trees.
+            # Fuel-only tile — no inline links, so no compound model
+            # needed. Emit a placeholder record so the level block
+            # below still gets a <ref> for the tile's fuel trees.
             model_sdf = ""
         # Centre of the tile in world metres. Used by <level> geometry/pose
         # below so the tile's activation bbox sits over its contents.
@@ -158,13 +189,18 @@ def build_scene_tiles(buildings, trees, roads, half_extent_m,
             'size_xy': tile_size_m,
         })
     if tile_records:
-        avg = sum(r['count'] for r in tile_records) / len(tile_records)
+        total_items = sum(r['count'] for r in tile_records)
         total_fuel = sum(r['fuel_tree_count'] for r in tile_records)
         fuel_tile_count = sum(1 for r in tile_records if r['fuel_tree_count'])
+        # Entity count drives world-load time. Shared-body links pack
+        # many visuals into one link; own-link items (cartoon trees)
+        # stay as one link each. A tile with N bodies + M trees now
+        # produces 1 + M links (+ M joints) instead of 1 + N + M.
         logger.info(
             f"Scene tiled: {len(tile_records)} tile(s), "
-            f"{sum(r['count'] for r in tile_records)} compound links total, "
-            f"~{avg:.0f} links/tile (tile_size={tile_size_m:.0f} m)"
+            f"{total_items} placements "
+            f"({total_body_items} body-merged, {total_own_links} own-link), "
+            f"tile_size={tile_size_m:.0f} m"
             + (f"; {total_fuel} fuel-mode trees across {fuel_tile_count} tile(s)"
                if total_fuel else "")
         )

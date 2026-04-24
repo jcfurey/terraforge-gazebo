@@ -136,9 +136,9 @@ def test_polygon_with_interior_uses_hole_adjusted_area(tmp_path):
         path, str(tmp_path / 'models'), origin_wgs84=(0.0, 0.0),
     )
     assert len(placements) == 1
-    # link_sdf should include the full exterior ring's vertices; hole is
-    # omitted (bbox collision fallback can't represent it).
-    sdf = placements[0]['link_sdf']
+    # body_sdf should include the full exterior ring's vertices; the
+    # hole is omitted (bbox collision fallback can't represent it).
+    sdf = placements[0]['body_sdf']
     assert sdf.count('<point>') >= 4
 
 
