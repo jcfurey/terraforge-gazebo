@@ -93,21 +93,22 @@ terraforge-gui
 ```
 <output-dir>/
 ├── <world-name>.world
-├── models/
-│   ├── building_<osmid>_N/       (one per OSM building feature — dead weight today:
-│   │                              buildings are inline <link>s inside tile compound
-│   │                              models, not referenced via model://; retained for
-│   │                              future switch to include-based emission)
-│   ├── tree_generic_0..4/        (5 reusable tree variants; referenced in `fuel` mode
-│   │                              via model://tree_fuel_* wrappers)
-│   └── road_<osmid>_N/           (only when --with-roads)
+├── models/                       (reserved; currently empty — buildings,
+│                                  cartoon trees, and roads are inlined as
+│                                  <link>s inside per-tile compound <model>s
+│                                  so gz-sim parses one entity per tile, not
+│                                  one per OSM feature)
+├── models_fuel/                  (only when --foliage-style fuel — auto-
+│   └── tree_fuel_0..4/            generated static wrappers; the launch
+│                                  file prepends this dir to
+│                                  GZ_SIM_RESOURCE_PATH)
 └── media_<world-name>/           (per-world subdir — see note below)
     ├── heightmap.png             (16-bit, 2^n+1 sized)
     ├── cloud_mask.png            (debug: white = pixel was cloud-masked)
     └── materials/
         └── textures/
             ├── satellite_texture.png
-            └── flat_normal.png
+            └── flat_normal.png   (heightmap-derived normal map, RGB8)
 ```
 
 **Per-world `media_<world-name>/`.** Each generation writes its heightmap / satellite

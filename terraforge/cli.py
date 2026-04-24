@@ -14,7 +14,6 @@ from terraforge.data_processing import (
     foliage_mask as foliage_mask_mod,
     road_processor,
     sdf_builder,
-    texture_processor,
     tree_processor,
 )
 from terraforge.utils.config import config

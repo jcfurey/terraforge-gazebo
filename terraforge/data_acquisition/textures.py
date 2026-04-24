@@ -407,7 +407,8 @@ def download_satellite_texture_tiles(
             f"Cache hit: reusing merged texture from {cached_cropped_path}"
         )
         # Copy into the canonical filename so downstream (cloud_mask,
-        # texture_processor) finds it at the same path regardless of zoom.
+        # foliage_mask, template render) finds it at the same path
+        # regardless of provider/zoom.
         import shutil
         shutil.copy2(cached_cropped_path, output_texture_path)
         logger.info(
