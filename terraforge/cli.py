@@ -244,19 +244,31 @@ def run_generate_world(
     os.makedirs(output_textures_dir, exist_ok=True)
 
     heightmap_output_path = os.path.join(output_media_dir, 'heightmap.png')
-    # texture_source_path is what the cloud-mask + texture-copy steps read.
-    # It's either the user-supplied orthophoto or the downloaded-tile mosaic.
+
+    # TWO distinct texture paths, deliberately kept separate:
+    #
+    #   texture_source_path (always PNG / user's raw orthophoto)
+    #     The LOSSLESS image every mask + analysis step reads —
+    #     cloud_mask, foliage_mask, tree_processor's legacy EXG
+    #     vegetation scatter. JPEG compression blurs low-contrast
+    #     EXG thresholds (2*G - R - B) and biases cloud-mask HLS
+    #     saturation, so these stages MUST NOT read the compressed
+    #     render texture. If the user supplied --texture-file, we take
+    #     their file as-is (they chose its quality); otherwise we
+    #     produce a PNG cache of the downloaded mosaic.
+    #
+    #   texture_output_path (JPEG by default, PNG optional)
+    #     The RENDER-ONLY asset baked into the world SDF as the
+    #     heightmap <diffuse>. Gazebo decodes this once at world load
+    #     and uploads to the GPU; JPEG is ~5x smaller + faster on
+    #     smooth satellite imagery. Nothing in the mask pipeline
+    #     touches this file.
+    #
     if texture_file is not None:
         texture_source_path = os.path.abspath(texture_file)
     else:
         texture_source_path = os.path.join(texture_cache_dir, 'satellite_texture.png')
-    texture_cache_png = texture_source_path  # kept for downstream name parity
-    # The mask + copy pipeline reads from the cache PNG directly; only
-    # the copy destination picks up the user's chosen texture_format.
-    # PNG on disk is lossless but ~10x larger than a q90 JPEG and
-    # correspondingly slower for Gazebo to read + decode at world
-    # load. JPEG is the default because the satellite texture is a
-    # smooth-gradient backdrop where JPEG artefacts are invisible.
+
     _texfmt = (texture_format or 'jpeg').lower()
     if _texfmt not in ('png', 'jpeg', 'jpg'):
         raise ValueError(f"Unsupported texture_format={texture_format!r}; "
@@ -265,6 +277,16 @@ def run_generate_world(
     texture_output_path = os.path.join(
         output_textures_dir, f'satellite_texture.{_texext}'
     )
+    # Safety rail: the two paths must never alias. If a future change
+    # accidentally routes the render output back into the mask source
+    # (or vice-versa), blow up now rather than silently letting JPEG
+    # artefacts bias EXG / HLS thresholds.
+    if os.path.abspath(texture_source_path) == os.path.abspath(texture_output_path):
+        raise AssertionError(
+            f"texture_source_path and texture_output_path alias the same "
+            f"file ({texture_source_path}); masks must read the lossless "
+            f"source, not the render-only output."
+        )
 
     _check_cancel()
     _log("Processing DEM into heightmap...")
@@ -318,17 +340,17 @@ def run_generate_world(
     # Let the masks scale their morphology kernels by meters-per-pixel so
     # thresholds behave the same at any zoom level.
     texture_meters_per_px = None
-    if os.path.exists(texture_cache_png):
+    if os.path.exists(texture_source_path):
         try:
             from PIL import Image as _Img
-            with _Img.open(texture_cache_png) as _tex:
+            with _Img.open(texture_source_path) as _tex:
                 tex_w = _tex.size[0]
             texture_meters_per_px = (2.0 * radius) / tex_w if tex_w > 0 else None
         except Exception:
             texture_meters_per_px = None
-    if cloud_filter and os.path.exists(texture_cache_png):
+    if cloud_filter and os.path.exists(texture_source_path):
         cloud_mask = cloud_mask_mod.build_cloud_mask(
-            texture_cache_png, texture_bbox,
+            texture_source_path, texture_bbox,
             meters_per_pixel=texture_meters_per_px,
         )
 
@@ -336,9 +358,9 @@ def run_generate_world(
     # buildings) BEFORE the tree processor so its image-based scatter path
     # can consult the precomputed mask instead of the legacy bare-EXG
     # heuristic. Mode "off" keeps the old code path in tree_processor.
-    if (foliage_mask_mode == 'rgb-osm' and os.path.exists(texture_cache_png)):
+    if (foliage_mask_mode == 'rgb-osm' and os.path.exists(texture_source_path)):
         foliage_mask = foliage_mask_mod.build_foliage_mask(
-            texture_cache_png, texture_bbox,
+            texture_source_path, texture_bbox,
             world_half_extent_m=radius,
             converter=converter,
             roads_geojson=roads_cache_path,
@@ -368,7 +390,7 @@ def run_generate_world(
         # satellite pixels OSM didn't tag. Needs the UTM-reprojected texture
         # (pixel grid == UTM meter grid) and the buildings geojson (exclude
         # footprints so trunks don't land inside walls).
-        satellite_texture_path=texture_cache_png,
+        satellite_texture_path=texture_source_path,
         buildings_geojson_path=buildings_cache_path,
         foliage_style=foliage_style,
         # When present, foliage_mask overrides the legacy bare-EXG heuristic
