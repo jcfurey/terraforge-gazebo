@@ -332,6 +332,8 @@ def process_osm_buildings_to_sdf(osm_filepath: str, models_dir: str, origin_wgs8
         tiny_skipped = 0
 
         cloud_skipped = 0
+        multipart_split = 0
+        invalid_geom_skipped = 0
         for feature_idx, feature in enumerate(osm_data['features']):
             geom_type = feature['geometry']['type']
             if geom_type not in ('Polygon', 'MultiPolygon'):
@@ -340,9 +342,6 @@ def process_osm_buildings_to_sdf(osm_filepath: str, models_dir: str, origin_wgs8
             props = feature['properties']
             building_id = props.get('osmid', f"{feature_idx}")
             color = _building_color(props)
-            # Height inference needs the footprint area, computed below.
-            # We'll set it just before emitting the link SDF. For now,
-            # placeholder; finalised after polygon_local is computed.
 
             polygon_wgs84 = shapely.geometry.shape(feature['geometry'])
             # Skip buildings whose centroid falls under a cloud in the
@@ -352,68 +351,103 @@ def process_osm_buildings_to_sdf(osm_filepath: str, models_dir: str, origin_wgs8
                 if cloud_mask.is_cloudy(c.y, c.x):
                     cloud_skipped += 1
                     continue
-            polygon_local = shapely.ops.transform(project, polygon_wgs84)
 
-            # Skip sheds / outhouses / bus shelters that OSM tags as
-            # "building". These inflate model count without affecting
-            # navigation; removing them shaves scene-load time noticeably.
-            try:
-                footprint_area = polygon_local.area
-            except Exception:
-                footprint_area = 0.0
-            if footprint_area < MIN_BUILDING_AREA_M2:
-                tiny_skipped += 1
-                continue
-
-            centroid_local = polygon_local.centroid
-            pose_xy = (centroid_local.x, centroid_local.y)
-
-            # Re-center the polygon on the model's own origin so the <include>
-            # pose places it correctly in the world.
-            polygon_centered = shapely.affinity.translate(
-                polygon_local, xoff=-pose_xy[0], yoff=-pose_xy[1]
-            )
-
-            # Place the building's base at the LOWEST terrain point under its
-            # footprint — stops buildings on slopes from floating on one side.
-            if elevation_sampler is not None:
-                samples = [
-                    elevation_sampler(x + pose_xy[0], y + pose_xy[1])
-                    for x, y in list(polygon_centered.exterior.coords)[:8]
-                ]
-                pose_z = min(samples) if samples else 0.0
+            # MultiPolygon buildings are common in OSM (courtyard + wings
+            # tagged as one way, industrial compounds, detached garages
+            # grouped under a single building=*). Emit each part as its
+            # own link so the visuals aren't collapsed to one bounding
+            # box. shapely.Polygon.area already subtracts interior holes
+            # for us, so a donut building gets the right footprint.
+            if polygon_wgs84.geom_type == 'MultiPolygon':
+                parts_wgs84 = list(polygon_wgs84.geoms)
+                if len(parts_wgs84) > 1:
+                    multipart_split += 1
             else:
-                pose_z = 0.0
+                parts_wgs84 = [polygon_wgs84]
 
-            model_name = f"building_{_sanitize(building_id)}_{feature_idx}"
+            for part_idx, part_wgs84 in enumerate(parts_wgs84):
+                polygon_local = shapely.ops.transform(project, part_wgs84)
 
-            # Height inference now has access to the metric footprint area —
-            # lets the area-based extrapolation kick in when OSM gave no type.
-            height = _infer_height(props, area_m2=footprint_area, rng=rng)
+                # Skip sheds / outhouses / bus shelters that OSM tags as
+                # "building". These inflate model count without affecting
+                # navigation; removing them shaves scene-load time
+                # noticeably. Also guards against invalid geometry where
+                # shapely returns a non-positive area (self-intersecting,
+                # CW exterior, etc.) — those would otherwise get a
+                # nonsense area-based height.
+                try:
+                    footprint_area = polygon_local.area
+                except Exception:
+                    footprint_area = 0.0
+                if footprint_area <= 0.0:
+                    invalid_geom_skipped += 1
+                    continue
+                if footprint_area < MIN_BUILDING_AREA_M2:
+                    tiny_skipped += 1
+                    continue
 
-            link_sdf = _polygon_to_polyline_link_sdf(
-                polygon_centered, link_name=model_name,
-                pose_xyz=(pose_xy[0], pose_xy[1], pose_z),
-                height=height, color=color,
-            )
-            if '<polyline>' in link_sdf:
-                polyline_count += 1
-            else:
-                bbox_fallback += 1
+                centroid_local = polygon_local.centroid
+                pose_xy = (centroid_local.x, centroid_local.y)
 
-            buildings.append({
-                'model_name': model_name,
-                'link_name': model_name,   # link inside the tile compound model
-                'pose_xy': pose_xy,
-                'pose_z': pose_z,
-                'link_sdf': link_sdf,
-            })
+                # Re-center the polygon on the model's own origin so the
+                # <include> pose places it correctly in the world.
+                polygon_centered = shapely.affinity.translate(
+                    polygon_local, xoff=-pose_xy[0], yoff=-pose_xy[1]
+                )
+
+                # Place the building's base at the LOWEST terrain point
+                # under its footprint — stops buildings on slopes from
+                # floating on one side.
+                if elevation_sampler is not None:
+                    samples = [
+                        elevation_sampler(x + pose_xy[0], y + pose_xy[1])
+                        for x, y in list(polygon_centered.exterior.coords)[:8]
+                    ]
+                    pose_z = min(samples) if samples else 0.0
+                else:
+                    pose_z = 0.0
+
+                # For single-part buildings keep the stable historical
+                # name; for multipart splits add a _pN suffix so link
+                # names stay unique inside a tile compound.
+                if len(parts_wgs84) == 1:
+                    model_name = f"building_{_sanitize(building_id)}_{feature_idx}"
+                else:
+                    model_name = (
+                        f"building_{_sanitize(building_id)}_"
+                        f"{feature_idx}_p{part_idx}"
+                    )
+
+                # Height inference has access to the metric footprint
+                # area — lets the area-based extrapolation kick in when
+                # OSM gave no type.
+                height = _infer_height(props, area_m2=footprint_area, rng=rng)
+
+                link_sdf = _polygon_to_polyline_link_sdf(
+                    polygon_centered, link_name=model_name,
+                    pose_xyz=(pose_xy[0], pose_xy[1], pose_z),
+                    height=height, color=color,
+                )
+                if '<polyline>' in link_sdf:
+                    polyline_count += 1
+                else:
+                    bbox_fallback += 1
+
+                buildings.append({
+                    'model_name': model_name,
+                    'link_name': model_name,
+                    'pose_xy': pose_xy,
+                    'pose_z': pose_z,
+                    'link_sdf': link_sdf,
+                })
 
         logger.info(
             f"OSM buildings processed: {len(buildings)} models "
             f"({polyline_count} polyline, {bbox_fallback} bbox-fallback, "
             f"{cloud_skipped} cloud-masked, "
-            f"{tiny_skipped} below {MIN_BUILDING_AREA_M2:.0f} m²) in {models_dir}"
+            f"{tiny_skipped} below {MIN_BUILDING_AREA_M2:.0f} m², "
+            f"{invalid_geom_skipped} invalid geometry, "
+            f"{multipart_split} multipart features split)"
         )
         return buildings
     except Exception as e:
