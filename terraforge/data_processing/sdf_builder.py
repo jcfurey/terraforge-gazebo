@@ -27,6 +27,13 @@ DEFAULT_LEVEL_ACTIVE_RADIUS_M = 300.0
 # this workspace. Override via CLI if your model has a different name.
 DEFAULT_PERFORMER_REF = "rovermax"
 
+# Slack added on top of the terrain's peak-to-trough range when sizing a
+# level's AABB. Covers buildings + trees standing on the highest DEM
+# sample plus drone/rover flight ceiling headroom. 200 m keeps the AABB
+# generous enough to hold typical city blocks without silently clipping
+# entities on ridges.
+BUILDING_Z_SLACK_M = 200.0
+
 
 def _tile_index(pose_xy, half_extent_m, tile_size_m):
     """Return (tx, ty) tile indices for a placement at Gazebo (x, y).
@@ -212,6 +219,13 @@ class SDFWorldBuilder:
         # distance from tile centre at which it should load) and derive
         # the per-level buffer from it.
         level_buffer_m = max(0.0, level_active_radius_m - tile_size_m / 2.0)
+        # Level AABB Z-extent has to cover every entity the tile references
+        # so the performer-in-level check doesn't miss a tall building or a
+        # tree perched on the highest DEM sample. height_amplitude is the
+        # terrain's full peak-to-trough range; add slack for building height
+        # (BUILDING_Z_SLACK_M), then clamp so short worlds still get a sane
+        # AABB (typical rover flight ceiling ~100 m).
+        level_z_extent_m = max(200.0, 2.0 * height_amplitude + BUILDING_Z_SLACK_M)
         if enable_level_streaming and scene_tiles:
             logger.info(
                 f"Native level streaming enabled: performer '{performer_ref}', "
@@ -233,6 +247,7 @@ class SDFWorldBuilder:
             enable_level_streaming=enable_level_streaming,
             level_active_radius_m=level_active_radius_m,
             level_buffer_m=level_buffer_m,
+            level_z_extent_m=level_z_extent_m,
             performer_ref=performer_ref,
             foliage_style=foliage_style,
         )

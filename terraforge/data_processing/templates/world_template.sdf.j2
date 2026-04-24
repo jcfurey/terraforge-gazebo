@@ -278,7 +278,11 @@
         <pose>{{ tile.center_x }} {{ tile.center_y }} 0 0 0 0</pose>
         <geometry>
           <box>
-            <size>{{ tile.size_xy }} {{ tile.size_xy }} 1000</size>
+            <!-- Z extent derived from terrain height_amplitude + slack
+                 (see BUILDING_Z_SLACK_M in sdf_builder.py) so a rover on
+                 a ridge top or a tall building's roof still reads as
+                 inside this level's AABB. -->
+            <size>{{ tile.size_xy }} {{ tile.size_xy }} {{ "%.1f"|format(level_z_extent_m) }}</size>
           </box>
         </geometry>
         <buffer>{{ level_buffer_m }}</buffer>
