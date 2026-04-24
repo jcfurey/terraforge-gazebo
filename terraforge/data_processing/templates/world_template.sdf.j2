@@ -71,16 +71,19 @@
       <ambient>0.5 0.5 0.5 1</ambient>
       <background>0.5 0.7 1.0 1</background>
       <shadows>false</shadows>
-      <!-- "Fog of war" atmospheric haze. Colour matches the sky so distant
-           tiles blend out naturally. linear fog is cheap (1 per-pixel math
-           op) and hides the sharp edge where the static scene ends or where
-           level-streamed tiles would pop in. Tune <start>/<end> to push the
-           visible horizon in or out; they're in world metres. -->
+      <!-- "Fog of war" haze. Deliberately a cool neutral grey — NOT the
+           sky-blue <background> colour — so distance reads as fog rolling
+           in, not as a flat cutoff to open sky. Fog only tints rendered
+           geometry, so the sky above the horizon stays blue; only the
+           ground / buildings / trees fade to grey with distance.
+           <end> must sit inside the level-active radius (see <buffer>
+           below) so tiles are fully obscured by the time they load,
+           hiding pop-in. linear fog is cheap (1 per-pixel math op). -->
       <fog>
         <type>linear</type>
-        <color>0.5 0.7 1.0 1</color>
-        <start>80</start>
-        <end>260</end>
+        <color>0.6 0.6 0.62 1</color>
+        <start>40</start>
+        <end>180</end>
       </fog>
     </scene>
 

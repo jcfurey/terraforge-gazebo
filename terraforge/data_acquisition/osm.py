@@ -93,3 +93,29 @@ def download_osm_roads(location: tuple, radius_meters: float, output_path: str) 
     except Exception as e:
         logger.warning(f"Failed to download OSM roads (continuing): {e}")
         return 0
+
+
+def download_osm_parking(location: tuple, radius_meters: float, output_path: str) -> int:
+    """Download parking lot / structure polygons tagged ``amenity=parking``.
+
+    Used by the foliage mask as a negative raster — image-based tree scatter
+    should never land in a parking lot, even if the satellite pixel looks
+    green (algae, faded paint, patchy grass inside lot dividers). Same
+    graceful-degrade behaviour as the road downloader: if Overpass is down
+    or returns nothing, the pipeline still generates a world, just without
+    parking exclusion.
+    """
+    logger.info(
+        f"Downloading OSM parking for location {location} with radius "
+        f"{radius_meters}m to {output_path}"
+    )
+    try:
+        return _download(
+            location, radius_meters,
+            tags={"amenity": ["parking"]},
+            output_path=output_path,
+            label="OSM parking",
+        )
+    except Exception as e:
+        logger.warning(f"Failed to download OSM parking (continuing): {e}")
+        return 0

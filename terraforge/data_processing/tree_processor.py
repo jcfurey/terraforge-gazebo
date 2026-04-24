@@ -365,7 +365,12 @@ def _load_building_polygons_gazebo(buildings_geojson_path: str, converter, world
 
 
 def _build_vegetation_mask(texture_path: str):
-    """Detect likely-vegetation pixels in the satellite texture.
+    """Detect likely-vegetation pixels in the satellite texture (legacy path).
+
+    Only used when ``foliage_mask`` is ``None`` (CLI flag ``--foliage-mask off``).
+    The default code path routes through :class:`FoliageMask` which layers
+    texture-variance canopy detection + OSM positive union + road/parking
+    exclusion on top of this — see ``data_processing/foliage_mask.py``.
 
     Uses the Excess-Green index (2G - R - B) combined with a luminance cap
     so the mask picks up canopy and foliage but rejects gray concrete /
@@ -444,28 +449,51 @@ def _scatter_on_vegetation(
     add_tree,
     placements_list: list,
     variant_pool,
+    foliage_mask=None,
 ):
     """Grid-scatter trees onto vegetation pixels, avoiding building footprints.
 
     Returns the number of trees actually appended to ``placements_list``.
+
+    When ``foliage_mask`` is a :class:`~terraforge.data_processing.foliage_mask.FoliageMask`,
+    it takes full responsibility for the placeable raster — canopy texture,
+    OSM positive union, and road/parking/building exclusion are all baked in.
+    When it's ``None``, fall back to the legacy bare-EXG heuristic so callers
+    that predate the foliage-mask CLI flag (``--foliage-mask off``) still work.
     """
     if not texture_path or not os.path.exists(texture_path):
         logger.info("No satellite texture — skipping vegetation-based tree fill.")
         return 0
-    veg_mask, (w, h) = _build_vegetation_mask(texture_path)
-    bldg_mask = _rasterize_building_mask(
-        building_polys_gazebo, (w, h), world_half_extent_m,
-        dilate_m=VEGETATION_BUILDING_BUFFER_M,
-    )
-    placeable = veg_mask & (~bldg_mask)
-    veg_frac = float(veg_mask.mean()) if veg_mask.size else 0.0
-    bldg_frac = float(bldg_mask.mean()) if bldg_mask.size else 0.0
-    placeable_frac = float(placeable.mean()) if placeable.size else 0.0
-    logger.info(
-        f"Vegetation mask: {veg_frac:.1%} green (EXG>{VEGETATION_EXG_MIN}, "
-        f"L<{VEGETATION_L_MAX}), {bldg_frac:.1%} buildings — "
-        f"{placeable_frac:.1%} placeable"
-    )
+    # Figure out the reference pixel grid. We always use the satellite
+    # texture's native grid so the sampled Gazebo-frame (cx, cy) → pixel
+    # conversion below is an exact identity with the texture, regardless
+    # of how the mask itself was constructed (at ~5 m/px internally).
+    with Image.open(texture_path) as _tex_img:
+        w, h = _tex_img.size
+
+    if foliage_mask is not None:
+        placeable = foliage_mask.sample_grid(w, h, world_half_extent_m)
+        placeable_frac = float(placeable.mean()) if placeable.size else 0.0
+        logger.info(
+            f"Vegetation scatter using FoliageMask "
+            f"(mask native {foliage_mask.width}x{foliage_mask.height}, "
+            f"placeable {placeable_frac:.1%} after resample to {w}x{h})"
+        )
+    else:
+        veg_mask, _ = _build_vegetation_mask(texture_path)
+        bldg_mask = _rasterize_building_mask(
+            building_polys_gazebo, (w, h), world_half_extent_m,
+            dilate_m=VEGETATION_BUILDING_BUFFER_M,
+        )
+        placeable = veg_mask & (~bldg_mask)
+        veg_frac = float(veg_mask.mean()) if veg_mask.size else 0.0
+        bldg_frac = float(bldg_mask.mean()) if bldg_mask.size else 0.0
+        placeable_frac = float(placeable.mean()) if placeable.size else 0.0
+        logger.info(
+            f"Vegetation mask (legacy EXG path): {veg_frac:.1%} green "
+            f"(EXG>{VEGETATION_EXG_MIN}, L<{VEGETATION_L_MAX}), "
+            f"{bldg_frac:.1%} buildings — {placeable_frac:.1%} placeable"
+        )
 
     pitch_m = 1.0 / math.sqrt(VEGETATION_DENSITY)
     jitter = pitch_m * 0.35  # random offset within cell to break the grid pattern
@@ -504,7 +532,8 @@ def process_osm_trees_to_sdf(osm_filepath: str, models_dir: str, origin_wgs84: t
                              satellite_texture_path: str = None,
                              buildings_geojson_path: str = None,
                              vegetation_fill: bool = True,
-                             foliage_style: str = 'cartoon') -> list:
+                             foliage_style: str = 'cartoon',
+                             foliage_mask=None) -> list:
     """Return a list of tree placements with mode-appropriate SDF fragments.
 
     Handles both point features (``natural=tree``) and polygon features
@@ -687,9 +716,14 @@ def process_osm_trees_to_sdf(osm_filepath: str, models_dir: str, origin_wgs84: t
         if remaining == 0:
             logger.info("Tree budget exhausted by OSM; skipping vegetation fill.")
         else:
-            building_polys = _load_building_polygons_gazebo(
-                buildings_geojson_path, converter, world_box,
-            )
+            # Only the legacy-EXG fallback path needs building polygons — the
+            # FoliageMask has already rasterized them at construction time.
+            if foliage_mask is None:
+                building_polys = _load_building_polygons_gazebo(
+                    buildings_geojson_path, converter, world_box,
+                )
+            else:
+                building_polys = []
             veg_count = _scatter_on_vegetation(
                 texture_path=satellite_texture_path,
                 building_polys_gazebo=building_polys,
@@ -699,6 +733,7 @@ def process_osm_trees_to_sdf(osm_filepath: str, models_dir: str, origin_wgs84: t
                 add_tree=add_tree,
                 placements_list=placements,
                 variant_pool=_VARIANT_FOREST,
+                foliage_mask=foliage_mask,
             )
 
     style_tag = "fuel-include" if foliage_style == 'fuel' else "inline"

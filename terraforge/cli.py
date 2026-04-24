@@ -11,6 +11,7 @@ from terraforge.data_processing import (
     building_processor,
     cloud_mask as cloud_mask_mod,
     elevation_processor,
+    foliage_mask as foliage_mask_mod,
     road_processor,
     sdf_builder,
     texture_processor,
@@ -73,6 +74,7 @@ def run_generate_world(
     performer_ref='rovermax',
     disable_level_streaming=False,
     foliage_style='cartoon',
+    foliage_mask_mode='rgb-osm',
     progress=None,
 ):
     """Run the full world-generation pipeline.
@@ -100,6 +102,7 @@ def run_generate_world(
     buildings_cache_path = os.path.join(config.OSM_CACHE_DIR, f"{location_name}_buildings.geojson")
     trees_cache_path = os.path.join(config.OSM_CACHE_DIR, f"{location_name}_foliage.geojson")
     roads_cache_path = os.path.join(config.OSM_CACHE_DIR, f"{location_name}_roads.geojson")
+    parking_cache_path = os.path.join(config.OSM_CACHE_DIR, f"{location_name}_parking.geojson")
     texture_cache_dir = os.path.join(config.TEXTURE_CACHE_DIR, f"{location_name}_texture")
     os.makedirs(texture_cache_dir, exist_ok=True)
 
@@ -121,8 +124,12 @@ def run_generate_world(
     _log("Downloading OSM layers...")
     osm.download_osm_buildings(origin_location, radius, buildings_cache_path)
     osm.download_osm_trees(origin_location, radius, trees_cache_path)
-    if with_roads:
-        osm.download_osm_roads(origin_location, radius, roads_cache_path)
+    # Roads + parking are always fetched because the foliage mask consumes
+    # them as negative rasters (no trees on asphalt, no trees in parking
+    # lots) even when road rendering is disabled. Road emission stays gated
+    # on --with-roads below.
+    osm.download_osm_roads(origin_location, radius, roads_cache_path)
+    osm.download_osm_parking(origin_location, radius, parking_cache_path)
 
     # Need the UTM CRS before the tile download so we can ask the downloader
     # to reproject the merged mosaic from Web Mercator to UTM. Without this,
@@ -221,11 +228,13 @@ def run_generate_world(
     # verify. Disable via cloud_filter=False if your imagery is cloud-free or
     # you want every OSM feature placed regardless of visual coverage.
     cloud_mask = None
-    if cloud_filter and os.path.exists(texture_cache_png):
-        texture_bbox = _calculate_bounds_wgs84(origin_location, radius)
-        # Texture was reprojected to UTM, so pixels are truly meter-spaced.
-        # Let the mask scale its morphology kernels by meters-per-pixel so
-        # thresholds behave the same at any zoom level.
+    foliage_mask = None
+    texture_bbox = _calculate_bounds_wgs84(origin_location, radius)
+    # Texture was reprojected to UTM, so pixels are truly meter-spaced.
+    # Let the masks scale their morphology kernels by meters-per-pixel so
+    # thresholds behave the same at any zoom level.
+    texture_meters_per_px = None
+    if os.path.exists(texture_cache_png):
         try:
             from PIL import Image as _Img
             with _Img.open(texture_cache_png) as _tex:
@@ -233,9 +242,32 @@ def run_generate_world(
             texture_meters_per_px = (2.0 * radius) / tex_w if tex_w > 0 else None
         except Exception:
             texture_meters_per_px = None
+    if cloud_filter and os.path.exists(texture_cache_png):
         cloud_mask = cloud_mask_mod.build_cloud_mask(
             texture_cache_png, texture_bbox,
             meters_per_pixel=texture_meters_per_px,
+        )
+
+    # Build the foliage mask (image canopy + OSM positives - roads/parking/
+    # buildings) BEFORE the tree processor so its image-based scatter path
+    # can consult the precomputed mask instead of the legacy bare-EXG
+    # heuristic. Mode "off" keeps the old code path in tree_processor.
+    if (foliage_mask_mode == 'rgb-osm' and os.path.exists(texture_cache_png)):
+        foliage_mask = foliage_mask_mod.build_foliage_mask(
+            texture_cache_png, texture_bbox,
+            world_half_extent_m=radius,
+            converter=converter,
+            roads_geojson=roads_cache_path,
+            parking_geojson=parking_cache_path,
+            positive_osm_geojson=trees_cache_path,
+            buildings_geojson=buildings_cache_path,
+            meters_per_pixel=texture_meters_per_px,
+        )
+    elif foliage_mask_mode == 'worldcover':
+        raise NotImplementedError(
+            "--foliage-mask worldcover is reserved for a future ESA WorldCover "
+            "10 m tree-cover integration; currently only 'off' and 'rgb-osm' "
+            "are implemented."
         )
 
     _log("Building Gazebo models from OSM footprints...")
@@ -257,6 +289,10 @@ def run_generate_world(
         satellite_texture_path=texture_cache_png,
         buildings_geojson_path=buildings_cache_path,
         foliage_style=foliage_style,
+        # When present, foliage_mask overrides the legacy bare-EXG heuristic
+        # inside _scatter_on_vegetation. Roads, parking, buildings, and
+        # smooth-grass rejection are all baked into the mask already.
+        foliage_mask=foliage_mask,
     )
     if with_roads:
         _log("Laying down roads from OSM highways...")
@@ -288,6 +324,8 @@ def run_generate_world(
     # Save the cloud mask alongside the heightmap for debug / visualization.
     if cloud_mask is not None:
         cloud_mask.save_debug_png(os.path.join(output_media_dir, 'cloud_mask.png'))
+    if foliage_mask is not None:
+        foliage_mask.save_debug_png(os.path.join(output_media_dir, 'foliage_mask.png'))
 
     _log("Rendering SDF world...")
     builder = sdf_builder.SDFWorldBuilder(TEMPLATE_DIR)
@@ -401,13 +439,27 @@ def cli(ctx, debug):
                    '~/.gz/fuel/ (persisted by the gz-cache docker volume on this '
                    'workspace); trees still participate in per-tile level streaming '
                    'via added <ref> entries.')
+@click.option('--foliage-mask',
+              'foliage_mask_mode',
+              type=click.Choice(['off', 'rgb-osm', 'worldcover'], case_sensitive=False),
+              default='rgb-osm',
+              help='Mask driving the image-based tree-scatter path (independent of '
+                   '--foliage-style). "rgb-osm" (default): combine EXG + local '
+                   'luminance variance on the satellite texture with an OSM positive '
+                   'union (forest/park/scrub/orchard/vineyard/heath/garden) and '
+                   'negative subtraction of buildings, road buffers, and parking '
+                   'lots. Rejects smooth grass, asphalt, and green rooftops. '
+                   '"off": fall back to the legacy bare-EXG heuristic (scatter on '
+                   'any green pixel; only buildings excluded). "worldcover" is '
+                   'reserved for an ESA WorldCover 10 m tree-cover raster '
+                   'integration and currently raises NotImplementedError.')
 @click.pass_context
 def generate_world(ctx, latitude, longitude, side_length, radius, output_dir,
                    world_name, height_amplitude, tile_provider, tile_api_key,
                    tile_zoom, tile_max_count,
                    with_roads, cloud_filter, dem_file, texture_file,
                    max_heightmap_size, performer_ref, disable_level_streaming,
-                   foliage_style):
+                   foliage_style, foliage_mask_mode):
     """Generate a Gazebo Harmonic SDF world for a given location.
 
     Exactly one of ``--side-length`` (full side, preferred) or ``--radius``
@@ -445,6 +497,7 @@ def generate_world(ctx, latitude, longitude, side_length, radius, output_dir,
             performer_ref=performer_ref,
             disable_level_streaming=disable_level_streaming,
             foliage_style=foliage_style.lower(),
+            foliage_mask_mode=foliage_mask_mode.lower(),
         )
     except Exception as e:
         logger.error(f"World generation failed: {e}")
