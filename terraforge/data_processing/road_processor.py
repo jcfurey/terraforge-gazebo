@@ -37,6 +37,15 @@ _DEFAULT_HALF_WIDTH = 2.5
 ROAD_THICKNESS = 0.08  # meters above terrain
 ROAD_COLOR = (0.20, 0.20, 0.22)  # dark asphalt
 
+# Max length (meters) of a single road segment before the emitter breaks
+# the OSM way into multiple sub-segments. Each sub-segment gets its own
+# elevation sample and its own flat slab, so the chain of slabs follows
+# the DEM at segment granularity instead of one giant horizontal plank.
+# 20 m is short enough to stay close to the terrain even on steep
+# hillsides (~5 deg per 20 m = ~1.8 m drop, below ROAD_THICKNESS +
+# visible z-fight margin) without multiplying output SDF size too much.
+_ROAD_SEGMENT_MAX_LEN_M = 20.0
+
 
 def _half_width(props: dict) -> float:
     hw = _ROAD_HALF_WIDTH.get(str(props.get('highway', '')).lower(), _DEFAULT_HALF_WIDTH)
@@ -135,15 +144,65 @@ def process_osm_roads_to_sdf(osm_filepath: str, models_dir: str, origin_wgs84: t
             continue
 
         half_w = _half_width(props)
-        # Buffer the line to a polygon (flat road surface). cap_style=2 → flat
-        # ends, join_style=2 → mitered joints → no weird rounded blobs.
+        road_id = props.get('osmid', f"{feature_idx}")
+        base_name = f"road_{_sanitize(road_id)}_{feature_idx}"
+
+        # MultiLineString: iterate component lines; each becomes its own
+        # segment chain below.
+        if line_local.geom_type == 'MultiLineString':
+            component_lines = list(line_local.geoms)
+        else:
+            component_lines = [line_local]
+
+        for comp_idx, comp_line in enumerate(component_lines):
+            emitted = _emit_road_segments(
+                comp_line, half_w, base_name, comp_idx, models_dir,
+                elevation_sampler=elevation_sampler,
+            )
+            if emitted == 0:
+                skipped += 1
+            else:
+                placements.extend(_segment_placements)
+                _segment_placements.clear()
+
+    logger.info(f"OSM roads processed: {len(placements)} road models, {skipped} skipped")
+    return placements
+
+
+# Module-level buffer used by _emit_road_segments as a simple return
+# channel (keeps the per-segment emit function self-contained without
+# growing its signature). Cleared by the caller after each component.
+_segment_placements = []
+
+
+def _emit_road_segments(line_local, half_w, base_name, comp_idx, models_dir,
+                        elevation_sampler=None):
+    """Break ``line_local`` into chunks of <= _ROAD_SEGMENT_MAX_LEN_M and
+    emit one flat-slab model per chunk, sampling elevation at each chunk's
+    midpoint so the sequence of slabs follows the DEM instead of producing
+    one long horizontal plank.
+    """
+    length = line_local.length
+    if length < 0.5:
+        return 0
+
+    n_segments = max(1, int(math.ceil(length / _ROAD_SEGMENT_MAX_LEN_M)))
+    emitted = 0
+    for seg_idx in range(n_segments):
+        t0 = seg_idx / n_segments
+        t1 = (seg_idx + 1) / n_segments
+        # Walk the parametric LineString into a list of vertices covering
+        # [t0, t1], keeping any original OSM vertices that fall inside so
+        # curvature isn't lost to coarse resampling.
+        seg_pts = _subline_points(line_local, t0, t1)
+        if len(seg_pts) < 2:
+            continue
+        seg_line = shapely.geometry.LineString(seg_pts)
         try:
-            poly_local = line_local.buffer(half_w, cap_style=2, join_style=2)
+            poly_local = seg_line.buffer(half_w, cap_style=2, join_style=2)
         except Exception:
-            skipped += 1
             continue
         if poly_local.is_empty or poly_local.geom_type != 'Polygon':
-            skipped += 1
             continue
 
         centroid = poly_local.centroid
@@ -152,26 +211,24 @@ def process_osm_roads_to_sdf(osm_filepath: str, models_dir: str, origin_wgs84: t
             poly_local, xoff=-pose_xy[0], yoff=-pose_xy[1]
         )
 
-        # Average terrain height along the line so the road approximately
-        # follows ground elevation (still flat per-segment; dartsim won't
-        # collide against the heightmap anyway).
         if elevation_sampler is not None:
-            samples = []
-            length = line_local.length
-            n = max(int(length / 20), 2)
-            for i in range(n + 1):
-                p = line_local.interpolate(i / n, normalized=True)
-                samples.append(elevation_sampler(p.x, p.y))
+            # Sample endpoints + midpoint of the sub-segment — enough for a
+            # good average on a short chunk, cheap with a cached sampler.
+            mid = seg_line.interpolate(0.5, normalized=True)
+            start = seg_pts[0]
+            end = seg_pts[-1]
+            samples = [
+                elevation_sampler(start[0], start[1]),
+                elevation_sampler(mid.x, mid.y),
+                elevation_sampler(end[0], end[1]),
+            ]
             pose_z = sum(samples) / len(samples) + ROAD_THICKNESS / 2.0
         else:
             pose_z = ROAD_THICKNESS / 2.0
 
-        road_id = props.get('osmid', f"{feature_idx}")
-        model_name = f"road_{_sanitize(road_id)}_{feature_idx}"
-
+        model_name = f"{base_name}_c{comp_idx}_s{seg_idx}"
         body_sdf = _polygon_to_polyline_sdf(poly_centered, ROAD_THICKNESS)
         if body_sdf is None:
-            skipped += 1
             continue
 
         model_dir = os.path.join(models_dir, model_name)
@@ -187,7 +244,42 @@ def process_osm_roads_to_sdf(osm_filepath: str, models_dir: str, origin_wgs84: t
             f.write(sdf_content)
         _write_model_config(model_dir, model_name)
 
-        placements.append({'model_name': model_name, 'pose_xy': pose_xy, 'pose_z': pose_z})
+        _segment_placements.append({
+            'model_name': model_name,
+            'pose_xy': pose_xy,
+            'pose_z': pose_z,
+        })
+        emitted += 1
+    return emitted
 
-    logger.info(f"OSM roads processed: {len(placements)} road models, {skipped} skipped")
-    return placements
+
+def _subline_points(line, t0, t1):
+    """Return the vertex sequence of ``line`` restricted to the parametric
+    range [t0, t1] (normalized), keeping any original OSM vertices that
+    fall strictly inside so the sub-line preserves curvature.
+    """
+    pts = [line.interpolate(t0, normalized=True)]
+    total = line.length
+    if total <= 0:
+        return [(pts[0].x, pts[0].y)]
+    target_lo = t0 * total
+    target_hi = t1 * total
+    # Walk the original vertices; distance-along-line is monotonic.
+    coords = list(line.coords)
+    if len(coords) < 2:
+        return [(coords[0][0], coords[0][1])]
+    accumulated = 0.0
+    for i in range(1, len(coords)):
+        x0, y0 = coords[i - 1][0], coords[i - 1][1]
+        x1, y1 = coords[i][0], coords[i][1]
+        seg_len = math.hypot(x1 - x0, y1 - y0)
+        next_acc = accumulated + seg_len
+        if next_acc > target_lo and accumulated < target_hi:
+            # This original segment overlaps [target_lo, target_hi].
+            if accumulated >= target_lo and accumulated <= target_hi:
+                pts.append(shapely.geometry.Point(x0, y0))
+        accumulated = next_acc
+        if accumulated >= target_hi:
+            break
+    pts.append(line.interpolate(t1, normalized=True))
+    return [(p.x, p.y) for p in pts]
