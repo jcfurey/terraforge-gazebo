@@ -67,6 +67,7 @@ def run_generate_world(
     tile_api_key=None,
     tile_zoom=None,
     tile_max_count=None,
+    max_texture_px=None,
     with_roads=False,
     cloud_filter=True,
     dem_file=None,
@@ -189,6 +190,8 @@ def run_generate_world(
             zoom=tile_zoom,
             max_tiles=tile_max_count if tile_max_count is not None else textures.MAX_TILES,
             utm_crs=converter.utm_crs_string,
+            max_texture_px=(max_texture_px if max_texture_px is not None
+                            else textures.DEFAULT_MAX_TEXTURE_PX),
         )
 
     # DEM reprojection uses the same converter created above, so both the
@@ -444,6 +447,12 @@ def cli(ctx, debug):
               help='Cap on tile count per world (default 4096). Pipeline steps zoom down '
                    'until the count fits. Raise if you want a 3 km+ world at zoom 19; '
                    'lower if the tile server rate-limits.')
+@click.option('--max-texture-size', 'max_texture_px', type=int, default=None,
+              help='Cap on the saved satellite texture\'s larger dimension in pixels '
+                   f'(default {textures.DEFAULT_MAX_TEXTURE_PX}). Mosaics exceeding this '
+                   'are downsampled (LANCZOS) before save. Prevents Gazebo OOM on '
+                   '≤4 GB VRAM GPUs and keeps world-load time bounded. Raise to preserve '
+                   'native tile detail on big-VRAM workstations; lower for Jetsons/laptops.')
 @click.option('--with-roads/--no-roads', default=False,
               help='Emit OSM highway ways as flat road strips. Off by default — '
                    'current implementation is flat-per-segment and floats over undulating terrain.')
@@ -504,7 +513,7 @@ def cli(ctx, debug):
 @click.pass_context
 def generate_world(ctx, latitude, longitude, side_length, radius, output_dir,
                    world_name, height_amplitude, tile_provider, tile_api_key,
-                   tile_zoom, tile_max_count,
+                   tile_zoom, tile_max_count, max_texture_px,
                    with_roads, cloud_filter, dem_file, texture_file,
                    max_heightmap_size, performer_ref, disable_level_streaming,
                    foliage_style, foliage_mask_mode):
@@ -577,6 +586,7 @@ def generate_world(ctx, latitude, longitude, side_length, radius, output_dir,
             tile_api_key=tile_api_key,
             tile_zoom=tile_zoom,
             tile_max_count=tile_max_count,
+            max_texture_px=max_texture_px,
             with_roads=with_roads,
             cloud_filter=cloud_filter,
             dem_file=dem_file,

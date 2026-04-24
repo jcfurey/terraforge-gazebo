@@ -19,6 +19,12 @@ USER_AGENT = "terraforge_gazebo/0.1 (+https://github.com/r3tr056/terraforge-gaze
 # zoom 19 is ~1000 tiles, zoom 18 is ~250; 4096 leaves room for larger worlds.
 MAX_TILES = 4096
 
+# Default cap on the saved satellite texture's larger dimension. A 16k x 16k
+# RGB mipmap chain costs ~1 GB of GPU memory and OOMs cards with <= 4 GB VRAM
+# (common on laptops/Jetsons). 8192 fits comfortably in 1 GB and keeps
+# ~0.5 m/px detail on a 4 km world. Override via --max-texture-size.
+DEFAULT_MAX_TEXTURE_PX = 8192
+
 
 @dataclass(frozen=True)
 class TileProvider:
@@ -302,6 +308,7 @@ def download_satellite_texture_tiles(
     zoom: Optional[int] = None,
     max_tiles: int = MAX_TILES,
     utm_crs: Optional[str] = None,
+    max_texture_px: int = DEFAULT_MAX_TEXTURE_PX,
 ):
     """Download satellite texture tiles for a location/radius from the chosen provider.
 
@@ -499,6 +506,23 @@ def download_satellite_texture_tiles(
         f"mosaic={merged_image.size} -> crop={cropped.size} "
         f"({crop_box[2] - crop_box[0]}x{crop_box[3] - crop_box[1]} px)"
     )
+    # Cap the texture so it fits in a reasonable GPU memory budget.
+    # Gazebo loads the whole PNG as a single Ogre2 texture at world
+    # load; a 16k x 16k RGB mipmap chain is ~1 GB of VRAM. Resize down
+    # with LANCZOS (sharpest of Pillow's high-quality filters) before
+    # the optional UTM warp so both paths share the cap.
+    cw, ch = cropped.size
+    if max(cw, ch) > max_texture_px:
+        scale = max_texture_px / float(max(cw, ch))
+        new_w = max(1, int(round(cw * scale)))
+        new_h = max(1, int(round(ch * scale)))
+        logger.warning(
+            f"Satellite texture {cw}x{ch} exceeds max_texture_px "
+            f"({max_texture_px}); downsampling to {new_w}x{new_h} before "
+            f"save (GPU memory / Gazebo load-time safety). Pass "
+            f"--max-texture-size to raise or lower the cap."
+        )
+        cropped = cropped.resize((new_w, new_h), Image.LANCZOS)
 
     if utm_crs:
         # Write the Web-Mercator-cropped mosaic to a staging file, then warp
