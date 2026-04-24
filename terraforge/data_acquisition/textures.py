@@ -9,6 +9,7 @@ from PIL import Image
 
 from terraforge.utils.config import config
 from terraforge.utils.logging import logger
+from terraforge.utils.retry import retry_call, scrub_key
 from terraforge.data_acquisition.elevation import _calculate_bounds_wgs84
 
 USER_AGENT = "terraforge_gazebo/0.1 (+https://github.com/r3tr056/terraforge-gazebo)"
@@ -361,6 +362,18 @@ def download_satellite_texture_tiles(
     west, south, east, north = bbox_wgs84
     top_left_tile = _deg2num(north, west, zoom)
     bottom_right_tile = _deg2num(south, east, zoom)
+    # Near the antimeridian, rounding quirks, or a degenerate bbox can put
+    # top_left's tile indices past bottom_right's. `range()` would silently
+    # produce an empty sequence and we'd write a 0x0 (or uninitialized black)
+    # mosaic without a single tile request. Fail loudly instead.
+    if (top_left_tile[0] > bottom_right_tile[0]
+            or top_left_tile[1] > bottom_right_tile[1]):
+        raise RuntimeError(
+            f"Invalid tile extent at zoom {zoom}: top_left={top_left_tile} "
+            f"is not north-west of bottom_right={bottom_right_tile} for bbox "
+            f"W={west:.4f} S={south:.4f} E={east:.4f} N={north:.4f}. "
+            f"Likely an antimeridian-crossing bbox, which is unsupported."
+        )
     tiles_x = range(top_left_tile[0], bottom_right_tile[0] + 1)
     tiles_y = range(top_left_tile[1], bottom_right_tile[1] + 1)
 
@@ -410,12 +423,31 @@ def download_satellite_texture_tiles(
                     cache_hits += 1
                 else:
                     tile_url = p.tile_url(zoom, x_tile, y_tile, api_key)
-                    response = requests.get(tile_url, headers=headers, stream=True, timeout=30)
-                    response.raise_for_status()
-                    tile_image = Image.open(BytesIO(response.content)).convert("RGB")
+
+                    def _fetch():
+                        r = requests.get(
+                            tile_url, headers=headers, stream=True, timeout=30,
+                        )
+                        r.raise_for_status()
+                        return r.content
+
+                    # Retry transient tile failures (connection resets,
+                    # 429s, 5xx) before giving up. Without this a single
+                    # hiccup in a 500-tile mosaic aborts the whole pull.
+                    content = retry_call(
+                        _fetch,
+                        attempts=3,
+                        initial_delay=1.0,
+                        exceptions=(requests.exceptions.RequestException,),
+                        label=f"tile {x_tile}_{y_tile}",
+                    )
+                    tile_image = Image.open(BytesIO(content)).convert("RGB")
                     tile_image.save(tile_output_path)
                     fetched += 1
-                    logger.debug(f"Downloaded tile {x_tile}_{y_tile} to {tile_output_path}")
+                    logger.debug(
+                        f"Downloaded tile {x_tile}_{y_tile} from "
+                        f"{scrub_key(tile_url, api_key)} to {tile_output_path}"
+                    )
                 x_offset = (x_tile - top_left_tile[0]) * tile_size
                 y_offset = (y_tile - top_left_tile[1]) * tile_size
                 merged_image.paste(tile_image, (x_offset, y_offset))

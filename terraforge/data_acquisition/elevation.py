@@ -73,14 +73,27 @@ def _calculate_bounds_wgs84(location: tuple, radius_meters: float) -> tuple:
 
 def download_dem(location: tuple, radius_meters: float, output_path: str):
     """Download SRTM3 DEM for ``location`` + ``radius_meters`` as GeoTIFF."""
+    from terraforge.utils.retry import retry_call
+
     logger.info(
         f"Downloading DEM for location {location} with radius {radius_meters}m "
         f"to {output_path}"
     )
-    try:
-        bounds = _calculate_bounds_wgs84(location, radius_meters)
+    bounds = _calculate_bounds_wgs84(location, radius_meters)
+
+    def _clip():
         elevation.clip(bounds=bounds, output=output_path, product='SRTM3')
         elevation.clean()
+
+    try:
+        # SRTM3 tiles come from elevation's upstream CDN, which occasionally
+        # 5xxs. Retry so a transient outage doesn't kill the pipeline.
+        retry_call(
+            _clip,
+            attempts=3,
+            initial_delay=2.0,
+            label='DEM download (SRTM3)',
+        )
         logger.info(f"DEM data downloaded successfully to {output_path}")
     except Exception as e:
         logger.error(f"Failed to download DEM: {e}")

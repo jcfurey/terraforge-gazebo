@@ -490,6 +490,30 @@ def generate_world(ctx, latitude, longitude, side_length, radius, output_dir,
         performer_ref = safe_identifier(performer_ref, field='--performer-ref')
     except ValueError as e:
         raise click.UsageError(str(e))
+
+    # Validate user-supplied rasters up front so we don't run the full
+    # OSM + tile pipeline (minutes of network I/O) before discovering a
+    # corrupt or unreadable file.
+    if dem_file is not None:
+        if not os.path.isfile(dem_file):
+            raise click.UsageError(f"--dem-file does not exist: {dem_file}")
+        ds = gdal.Open(os.path.abspath(dem_file))
+        if ds is None:
+            raise click.UsageError(
+                f"--dem-file is not a GDAL-readable raster: {dem_file}"
+            )
+        ds = None
+    if texture_file is not None:
+        if not os.path.isfile(texture_file):
+            raise click.UsageError(f"--texture-file does not exist: {texture_file}")
+        try:
+            with Image.open(os.path.abspath(texture_file)) as img:
+                img.verify()
+        except Exception as e:
+            raise click.UsageError(
+                f"--texture-file is not a readable image ({type(e).__name__}: {e}): "
+                f"{texture_file}"
+            )
     try:
         run_generate_world(
             latitude=latitude,

@@ -2,15 +2,19 @@ import osmnx as ox
 
 from terraforge.data_acquisition.elevation import _calculate_bounds_wgs84
 from terraforge.utils.logging import logger
+from terraforge.utils.retry import retry_call
 
 
 def _download(location, radius_meters, tags, output_path, label):
     bbox = _calculate_bounds_wgs84(location, radius_meters)
-    try:
-        gdf = ox.features_from_bbox(bbox=bbox, tags=tags)
-    except Exception as e:
-        logger.warning(f"{label}: no features returned ({e})")
-        return 0
+    # Overpass commonly 429s on bursty queries (we issue ~4 in a row).
+    # A short backoff absorbs that without the caller seeing a failure.
+    gdf = retry_call(
+        lambda: ox.features_from_bbox(bbox=bbox, tags=tags),
+        attempts=3,
+        initial_delay=2.0,
+        label=label,
+    )
     if gdf.empty:
         logger.info(f"{label}: 0 features in {radius_meters}m radius")
         return 0
