@@ -34,10 +34,28 @@ jobs:
           . /opt/ros/jazzy/setup.bash
           colcon build --packages-select terraforge_gazebo
 
-      - name: Test
+      - name: Test (ament linters via colcon)
         shell: bash
         run: |
           . /opt/ros/jazzy/setup.bash
           . install/setup.bash
           colcon test --packages-select terraforge_gazebo --event-handlers console_direct+
           colcon test-result --verbose
+
+      - name: Test (pytest functional suite)
+        shell: bash
+        # colcon test above only runs the ament_copyright/flake8/pep257
+        # linter tests. The functional suite under test/ (coordinates,
+        # naming, retry, heightmap sizing, DEM sampler, fuel wrappers,
+        # normal map, tile parallelism, building geometry) doesn't
+        # register with colcon's test plugin; run it directly so
+        # regressions actually fail CI.
+        run: |
+          . /opt/ros/jazzy/setup.bash
+          . install/setup.bash
+          cd src/terraforge_gazebo
+          python3 -m pytest test/ \
+              --ignore=test/test_copyright.py \
+              --ignore=test/test_flake8.py \
+              --ignore=test/test_pep257.py \
+              -v --tb=short
