@@ -343,20 +343,31 @@ def run_generate_world(
         # "follow the ground" requires per-polyline elevation interpolation
         # that isn't implemented yet). Re-enable via --with-roads.
         roads = []
+    # Historical name — file now carries the heightmap-derived normal
+    # map, not a flat 4x4 stand-in. Keeping the filename stable so
+    # existing world SDFs + downstream packaging continue to resolve.
     flat_normal_output_path = os.path.join(output_textures_dir, 'flat_normal.png')
     if os.path.exists(texture_source_path):
         _log("Copying orthophoto / satellite texture...")
         import shutil
         os.makedirs(os.path.dirname(texture_output_path), exist_ok=True)
         shutil.copy2(texture_source_path, texture_output_path)
-        # Emit a flat tangent-space normal map next to the diffuse texture.
-        # gz-sim's SDF parser aborts if <normal> is omitted from a heightmap
-        # <texture> (default resolves to __default__ and can't be found),
-        # but reusing the diffuse satellite photo as a normal map creates
-        # fake specular on flat ground. A 4x4 RGB(128, 128, 255) PNG is the
-        # smallest valid stand-in — every texel encodes "surface points
-        # straight up", so the heightmap renders matte.
-        Image.new('RGB', (4, 4), (128, 128, 255)).save(flat_normal_output_path)
+        # Derive a tangent-space normal map from the heightmap gradient
+        # instead of emitting a flat 4x4 RGB(128,128,255) stand-in. Pure
+        # generation-time compute; Gazebo gets proper directional
+        # shading on slopes without any runtime cost. gz-sim's SDF
+        # parser still requires the <normal> child to be a real file,
+        # so this replaces the placeholder in-place.
+        if os.path.exists(heightmap_output_path):
+            extent_meters = 2.0 * radius
+            elevation_processor.write_heightmap_normal_map(
+                heightmap_output_path,
+                flat_normal_output_path,
+                extent_meters=extent_meters,
+                height_amplitude_m=height_amplitude,
+            )
+        else:
+            Image.new('RGB', (4, 4), (128, 128, 255)).save(flat_normal_output_path)
 
     # Save the cloud mask alongside the heightmap for debug / visualization.
     if cloud_mask is not None:

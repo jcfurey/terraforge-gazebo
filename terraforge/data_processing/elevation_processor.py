@@ -156,6 +156,77 @@ def process_dem_to_heightmap(dem_filepath: str, output_heightmap_path: str) -> d
         dem_dataset = None
 
 
+def write_heightmap_normal_map(
+    heightmap_path: str, output_normal_path: str,
+    extent_meters: float, height_amplitude_m: float,
+) -> None:
+    """Compute a tangent-space normal map from the 16-bit heightmap PNG.
+
+    The SDF template requires a `<normal>` texture or its parser aborts
+    at world load. A flat 4x4 RGB(128,128,255) stand-in satisfies the
+    parser but leaves the terrain matte; deriving the normal from the
+    heightmap gradient gives proper directional shading for free (pure
+    preprocessing, zero runtime cost).
+
+    Args:
+        heightmap_path: 16-bit single-channel PNG as written by
+            :func:`process_dem_to_heightmap`.
+        output_normal_path: Where to write the RGB8 PNG normal map.
+        extent_meters: Full side length of the terrain in world metres
+            (= ``2 * radius``). Sets meters-per-pixel for the X/Y
+            gradient.
+        height_amplitude_m: Peak-to-trough Z scale the SDF applies to
+            normalized heightmap values. 65535 steps map to
+            ``height_amplitude_m`` metres, so the Z gradient per step
+            is ``height_amplitude_m / 65535``.
+    """
+    with Image.open(heightmap_path) as img:
+        if img.mode != 'I;16':
+            # Fallback: let PIL convert anything else to int16. Worst
+            # case is a small precision loss on an 8-bit source.
+            img = img.convert('I')
+        h_arr = np.asarray(img, dtype=np.float32)
+
+    height, width = h_arr.shape
+    # Central differences (np.gradient) give dH/dpx, dH/dpy in heightmap
+    # units per pixel. Convert to metres: Z step = amplitude / 65535
+    # per heightmap unit; X/Y step = extent / (size - 1) metres per pixel.
+    dz_per_unit = height_amplitude_m / 65535.0
+    px_size_m = extent_meters / max(width - 1, 1)
+    # np.gradient returns (gy, gx) — rows first. Image rows grow SOUTH,
+    # so gy < 0 when terrain rises NORTH. World axes: +X = east, +Y =
+    # north, +Z = up (Gazebo ENU).
+    gy, gx = np.gradient(h_arr)
+    # World-space surface gradient in metres/metre (dimensionless slope).
+    dzdx = gx * dz_per_unit / px_size_m
+    dzdy = gy * dz_per_unit / px_size_m
+    # Ogre2/OpenGL tangent-space normal map convention:
+    #   east-rising  -> nx > 0  -> R > 128
+    #   north-rising -> ny > 0  -> G > 128
+    # dH/d(pixel_col) == gx: east-rising has gx > 0, so nx = dzdx.
+    # dH/d(pixel_row) == gy: north-rising has gy < 0 (rows grow south),
+    # so ny = -dzdy flips sign.
+    nx = dzdx
+    ny = -dzdy
+    nz = np.ones_like(nx)
+    norm = np.sqrt(nx * nx + ny * ny + nz * nz)
+    nx /= norm
+    ny /= norm
+    nz /= norm
+    # Remap [-1, 1] -> [0, 255]. Round-to-nearest to avoid a half-pixel
+    # darkness bias at fully-flat regions.
+    rgb = np.empty((height, width, 3), dtype=np.uint8)
+    rgb[..., 0] = np.clip(np.rint((nx + 1.0) * 127.5), 0, 255).astype(np.uint8)
+    rgb[..., 1] = np.clip(np.rint((ny + 1.0) * 127.5), 0, 255).astype(np.uint8)
+    rgb[..., 2] = np.clip(np.rint((nz + 1.0) * 127.5), 0, 255).astype(np.uint8)
+
+    Image.fromarray(rgb, mode='RGB').save(output_normal_path, format='PNG')
+    logger.info(
+        f"Normal map derived from heightmap: {width}x{height} -> "
+        f"{output_normal_path}"
+    )
+
+
 def sample_dem_elevation_utm(
     dem_filepath: str, utm_x: float, utm_y: float, nodata_fallback: float = None
 ) -> float:
