@@ -97,6 +97,12 @@ def run_generate_world(
     world_name = safe_identifier(world_name, field='world_name')
     performer_ref = safe_identifier(performer_ref, field='performer_ref')
 
+    if foliage_mask_mode == 'worldcover':
+        raise NotImplementedError(
+            "foliage_mask_mode='worldcover' is reserved for a future ESA "
+            "WorldCover integration; use 'rgb-osm' or 'off'."
+        )
+
     # Fuel mode emits <include><uri>model://tree_fuel_<i></uri></include>.
     # If the wrappers aren't reachable via GZ_SIM_RESOURCE_PATH (or the
     # per-world models_fuel/ subdir), gz-sim silently drops the trees.
@@ -294,12 +300,6 @@ def run_generate_world(
             positive_osm_geojson=trees_cache_path,
             buildings_geojson=buildings_cache_path,
             meters_per_pixel=texture_meters_per_px,
-        )
-    elif foliage_mask_mode == 'worldcover':
-        raise NotImplementedError(
-            "--foliage-mask worldcover is reserved for a future ESA WorldCover "
-            "10 m tree-cover integration; currently only 'off' and 'rgb-osm' "
-            "are implemented."
         )
 
     _log("Building Gazebo models from OSM footprints...")
@@ -538,6 +538,17 @@ def generate_world(ctx, latitude, longitude, side_length, radius, output_dir,
                 f"--texture-file is not a readable image ({type(e).__name__}: {e}): "
                 f"{texture_file}"
             )
+
+    # --foliage-mask worldcover is reserved but not yet implemented. Fail
+    # fast at argument parsing so we don't run the whole DEM+OSM+tile
+    # pipeline only to raise from inside run_generate_world.
+    if foliage_mask_mode.lower() == 'worldcover':
+        raise click.UsageError(
+            "--foliage-mask worldcover is reserved for a future ESA WorldCover "
+            "10 m tree-cover integration and is not yet implemented. Use "
+            "'rgb-osm' (default) or 'off'."
+        )
+
     try:
         run_generate_world(
             latitude=latitude,
