@@ -107,8 +107,8 @@ terraforge-gui
     ├── cloud_mask.png            (debug: white = pixel was cloud-masked)
     └── materials/
         └── textures/
-            ├── satellite_texture.png
-            └── flat_normal.png   (heightmap-derived normal map, RGB8)
+            ├── satellite_texture.jpg  (or .png if --texture-format png)
+            └── flat_normal.png        (heightmap-derived normal map, RGB8)
 ```
 
 **Per-world `media_<world-name>/`.** Each generation writes its heightmap / satellite
@@ -153,7 +153,7 @@ Attribution is emitted as a log line per generation run; include it when publish
 
 ## Modules
 
-- `terraforge.cli` — `click`-based CLI. Exposes `run_generate_world()` for programmatic use (e.g. from the GUI or a wrapper script). Flags include `--tile-provider`, `--tile-api-key`, `--tile-zoom`, `--tile-max-count`, `--height-amplitude`, `--max-heightmap-size`, `--with-roads` / `--no-roads`, `--cloud-filter` / `--no-cloud-filter`, `--dem-file` (override SRTM with a user-supplied DEM), `--texture-file` (override tiles with a user-supplied orthophoto), `--performer-ref` (level-streaming performer name), `--disable-level-streaming`, `--foliage-style cartoon|fuel`, and `--foliage-mask off|rgb-osm|worldcover`. Transient network failures (SRTM/Overpass/tile server) are retried with exponential backoff.
+- `terraforge.cli` — `click`-based CLI. Exposes `run_generate_world()` for programmatic use (e.g. from the GUI or a wrapper script). Flags include `--tile-provider`, `--tile-api-key`, `--tile-zoom`, `--tile-max-count`, `--max-texture-size` (GPU-safety cap), `--texture-format jpeg|png` (jpeg default — ~5x smaller + faster Gazebo load), `--height-amplitude`, `--max-heightmap-size`, `--with-roads` / `--no-roads`, `--cloud-filter` / `--no-cloud-filter`, `--dem-file` (override SRTM with a user-supplied DEM), `--texture-file` (override tiles with a user-supplied orthophoto), `--performer-ref` (level-streaming performer name), `--disable-level-streaming`, `--foliage-style cartoon|fuel`, and `--foliage-mask off|rgb-osm|worldcover`. Transient network failures (SRTM/Overpass/tile server) are retried with exponential backoff.
 - `terraforge.data_acquisition`
   - `elevation.py` — SRTM DEM download, **UTM-correct** WGS84 bbox, and WGS84→UTM reprojection (`reproject_dem_to_utm`) onto a true meter-square Ogre2-valid grid.
   - `osm.py` — buildings / foliage / roads downloaders (all `osmnx.features_from_bbox`).

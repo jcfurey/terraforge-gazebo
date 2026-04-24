@@ -76,6 +76,7 @@ def run_generate_world(
     disable_level_streaming=False,
     foliage_style='cartoon',
     foliage_mask_mode='rgb-osm',
+    texture_format='jpeg',
     progress=None,
     progress_percent=None,
     cancel_flag=None,
@@ -250,7 +251,20 @@ def run_generate_world(
     else:
         texture_source_path = os.path.join(texture_cache_dir, 'satellite_texture.png')
     texture_cache_png = texture_source_path  # kept for downstream name parity
-    texture_output_path = os.path.join(output_textures_dir, 'satellite_texture.png')
+    # The mask + copy pipeline reads from the cache PNG directly; only
+    # the copy destination picks up the user's chosen texture_format.
+    # PNG on disk is lossless but ~10x larger than a q90 JPEG and
+    # correspondingly slower for Gazebo to read + decode at world
+    # load. JPEG is the default because the satellite texture is a
+    # smooth-gradient backdrop where JPEG artefacts are invisible.
+    _texfmt = (texture_format or 'jpeg').lower()
+    if _texfmt not in ('png', 'jpeg', 'jpg'):
+        raise ValueError(f"Unsupported texture_format={texture_format!r}; "
+                         f"expected 'png' or 'jpeg'.")
+    _texext = 'png' if _texfmt == 'png' else 'jpg'
+    texture_output_path = os.path.join(
+        output_textures_dir, f'satellite_texture.{_texext}'
+    )
 
     _check_cancel()
     _log("Processing DEM into heightmap...")
@@ -381,10 +395,20 @@ def run_generate_world(
     # existing world SDFs + downstream packaging continue to resolve.
     flat_normal_output_path = os.path.join(output_textures_dir, 'flat_normal.png')
     if os.path.exists(texture_source_path):
-        _log("Copying orthophoto / satellite texture...")
-        import shutil
+        _log(f"Copying orthophoto / satellite texture as {_texext.upper()}...")
         os.makedirs(os.path.dirname(texture_output_path), exist_ok=True)
-        shutil.copy2(texture_source_path, texture_output_path)
+        if _texext == 'png':
+            import shutil
+            shutil.copy2(texture_source_path, texture_output_path)
+        else:
+            # JPEG path: re-encode the source PNG/GeoTIFF into a
+            # Gazebo-friendly .jpg. Quality 90 is visually lossless on
+            # satellite imagery and cuts disk / upload size ~10x vs PNG.
+            with Image.open(texture_source_path) as _tex:
+                if _tex.mode != 'RGB':
+                    _tex = _tex.convert('RGB')
+                _tex.save(texture_output_path, format='JPEG',
+                          quality=90, optimize=True)
         # Derive a tangent-space normal map from the heightmap gradient
         # instead of emitting a flat 4x4 RGB(128,128,255) stand-in. Pure
         # generation-time compute; Gazebo gets proper directional
@@ -485,6 +509,16 @@ def cli(ctx, debug):
                    'are downsampled (LANCZOS) before save. Prevents Gazebo OOM on '
                    '≤4 GB VRAM GPUs and keeps world-load time bounded. Raise to preserve '
                    'native tile detail on big-VRAM workstations; lower for Jetsons/laptops.')
+@click.option('--texture-format',
+              type=click.Choice(['jpeg', 'png'], case_sensitive=False),
+              default='jpeg',
+              help='Satellite texture file format written into '
+                   'media_<world>/materials/textures/. "jpeg" (default, quality 90) '
+                   'is ~10x smaller on disk and decodes correspondingly faster in '
+                   'Gazebo — the satellite texture is a smooth-gradient backdrop '
+                   'where JPEG artefacts are invisible. "png" keeps the texture '
+                   'lossless (relevant only for sharp-edged orthophotos supplied '
+                   'via --texture-file).')
 @click.option('--with-roads/--no-roads', default=False,
               help='Emit OSM highway ways as flat road strips. Off by default — '
                    'current implementation is flat-per-segment and floats over undulating terrain.')
@@ -545,7 +579,7 @@ def cli(ctx, debug):
 @click.pass_context
 def generate_world(ctx, latitude, longitude, side_length, radius, output_dir,
                    world_name, height_amplitude, tile_provider, tile_api_key,
-                   tile_zoom, tile_max_count, max_texture_px,
+                   tile_zoom, tile_max_count, max_texture_px, texture_format,
                    with_roads, cloud_filter, dem_file, texture_file,
                    max_heightmap_size, performer_ref, disable_level_streaming,
                    foliage_style, foliage_mask_mode):
@@ -628,6 +662,7 @@ def generate_world(ctx, latitude, longitude, side_length, radius, output_dir,
             disable_level_streaming=disable_level_streaming,
             foliage_style=foliage_style.lower(),
             foliage_mask_mode=foliage_mask_mode.lower(),
+            texture_format=texture_format.lower(),
         )
     except Exception as e:
         logger.error(f"World generation failed: {e}")
