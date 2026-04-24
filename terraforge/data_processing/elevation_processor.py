@@ -167,6 +167,10 @@ def sample_dem_elevation_utm(
     Points outside the DEM bounds are clamped to the nearest edge pixel.
     If the sampled pixel is nodata and ``nodata_fallback`` is given, that
     value is returned instead; otherwise nodata propagates to the caller.
+
+    Each call opens the raster and issues a 1x1 ReadAsArray; prefer
+    :func:`open_dem_sampler` when you plan to sample many points (it
+    reads the DEM once into numpy and hands back a fast closure).
     """
     ds = gdal.Open(dem_filepath)
     if ds is None:
@@ -186,3 +190,56 @@ def sample_dem_elevation_utm(
         return value
     finally:
         ds = None
+
+
+def open_dem_sampler(dem_filepath: str, nodata_fallback: float = None):
+    """Load a UTM DEM once and return a fast ``sampler(utm_x, utm_y)`` closure.
+
+    The building/tree/road processors each ask for hundreds-to-thousands
+    of elevation samples. Calling :func:`sample_dem_elevation_utm` per
+    sample reopens the GeoTIFF on every query; on a typical 2 km world
+    (~1000 buildings × 8 samples, ~2000 trees × 1 sample, ~500 roads ×
+    5 samples) that's 10–60 s of GDAL overhead for a few KB of data.
+
+    This helper reads the entire band into a numpy array up front (the
+    DEM is at most ~4097² × 4 B ≈ 65 MB, comfortably in RAM) and returns
+    a closure that indexes into it directly.
+    """
+    ds = gdal.Open(dem_filepath)
+    if ds is None:
+        raise Exception(f"Failed to open DEM: {dem_filepath}")
+    try:
+        gt = ds.GetGeoTransform()
+        width = ds.RasterXSize
+        height = ds.RasterYSize
+        band = ds.GetRasterBand(1)
+        nodata = band.GetNoDataValue()
+        # ReadAsArray with no args returns the full band. Keep it float32
+        # — plenty of precision for terrain heights, half the memory of
+        # float64.
+        arr = band.ReadAsArray().astype(np.float32, copy=False)
+    finally:
+        ds = None
+
+    inv_px_w = 1.0 / gt[1]
+    inv_px_h = 1.0 / gt[5]
+    ox = gt[0]
+    oy = gt[3]
+
+    def sampler(utm_x: float, utm_y: float) -> float:
+        px = int((utm_x - ox) * inv_px_w)
+        py = int((utm_y - oy) * inv_px_h)
+        if px < 0:
+            px = 0
+        elif px >= width:
+            px = width - 1
+        if py < 0:
+            py = 0
+        elif py >= height:
+            py = height - 1
+        value = float(arr[py, px])
+        if nodata is not None and value == nodata and nodata_fallback is not None:
+            return float(nodata_fallback)
+        return value
+
+    return sampler

@@ -159,6 +159,23 @@ class CloudMask:
         strict_fraction = float(strict_mask.mean())
         loose_fraction = float(loose_mask.mean())
 
+        # Fast path: no strict seeds means no clouds survive the pipeline
+        # (geodesic growth needs seeds; dilation of an empty mask is empty).
+        # Skip all the Pillow morphology — on clear-sky imagery this saves
+        # 2-5 s per generation at the default working resolution.
+        if strict_fraction == 0.0:
+            empty = np.zeros(strict_mask.shape, dtype=bool)
+            instance = cls(empty, bbox_wgs84)
+            logger.info(
+                f"Cloud mask built from {image_path}: "
+                f"L p50/p90/p99 = {float(np.percentile(luminance, 50)):.2f}/"
+                f"{float(np.percentile(luminance, 90)):.2f}/"
+                f"{float(np.percentile(luminance, 99)):.2f}, "
+                f"strict seed set is empty (no pixel above "
+                f"L>={l_min},S<={s_max}); skipping morphology."
+            )
+            return instance
+
         def _open_u8(arr_u8, r):
             """Morphological opening (erode then dilate) by radius r."""
             if r <= 0:

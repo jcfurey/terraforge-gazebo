@@ -243,11 +243,16 @@ def run_generate_world(
     # guarantees the sample comes from the same grid Gazebo is rendering.
     # If a sample lands on a nodata edge pixel, fall back to dem_stats['min']
     # so the asset sits at ground level rather than at z = -32768 * z_per_meter.
+    #
+    # Load the DEM once into numpy so we don't pay a gdal.Open + 1x1 read
+    # per asset (thousands of buildings/trees/roads -> 10-60 s otherwise).
+    dem_sampler = elevation_processor.open_dem_sampler(
+        dem_utm_cache_path, nodata_fallback=dem_stats['min']
+    )
+
     def sample_terrain_z(gx, gy):
         utm_x, utm_y = converter.gazebo_to_utm((gx, gy))
-        raw_elev = elevation_processor.sample_dem_elevation_utm(
-            dem_utm_cache_path, utm_x, utm_y, nodata_fallback=dem_stats['min']
-        )
+        raw_elev = dem_sampler(utm_x, utm_y)
         return (raw_elev - dem_stats['min']) * z_per_meter + terrain_z_offset
 
     # Build a cloud mask from the cropped-to-exact-bbox satellite texture so
