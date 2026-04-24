@@ -280,6 +280,45 @@ def _variant_label(variant_idx: int) -> str:
     return f"tree_generic_{variant_idx}"
 
 
+def fuel_wrapper_model_names() -> list:
+    """Names of the `tree_fuel_<i>` wrapper models required by Fuel mode.
+
+    Kept in sync with ``TREE_VARIANTS``; the include URI
+    ``model://tree_fuel_<i>`` is resolved against ``GZ_SIM_RESOURCE_PATH``
+    (or a path the generator bundles into the output world) at load time.
+    """
+    return [f"tree_fuel_{i}" for i in range(TREE_VARIANTS)]
+
+
+def missing_fuel_wrappers(extra_roots: list = None) -> list:
+    """Return the subset of fuel wrapper model names not found on disk.
+
+    Searches every path in ``$GZ_SIM_RESOURCE_PATH`` plus any ``extra_roots``
+    the caller passes (e.g. the current output directory's ``models_fuel/``
+    subdir). A wrapper is "present" iff ``<root>/tree_fuel_<i>/model.sdf``
+    exists. If the returned list is non-empty, ``--foliage-style fuel`` will
+    produce SDF with unresolvable URIs and trees will silently disappear in
+    Gazebo — callers should surface this to the user up front.
+    """
+    roots = []
+    env = os.environ.get('GZ_SIM_RESOURCE_PATH', '')
+    if env:
+        # GZ_SIM_RESOURCE_PATH is colon-separated on Linux, semicolon on Windows.
+        sep = ';' if os.name == 'nt' else ':'
+        roots.extend(p for p in env.split(sep) if p)
+    if extra_roots:
+        roots.extend(extra_roots)
+    missing = []
+    for name in fuel_wrapper_model_names():
+        found = any(
+            os.path.isfile(os.path.join(root, name, 'model.sdf'))
+            for root in roots
+        )
+        if not found:
+            missing.append(name)
+    return missing
+
+
 def _tree_fuel_include_sdf(unique_name: str, pose_xyz: tuple, variant_idx: int) -> str:
     """Emit a top-level `<include>` referencing a `tree_fuel_<variant>` wrapper
     model. The wrapper is resolved via `GZ_SIM_RESOURCE_PATH` — it lives under

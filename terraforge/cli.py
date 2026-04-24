@@ -97,6 +97,25 @@ def run_generate_world(
     world_name = safe_identifier(world_name, field='world_name')
     performer_ref = safe_identifier(performer_ref, field='performer_ref')
 
+    # Fuel mode emits <include><uri>model://tree_fuel_<i></uri></include>.
+    # If the wrappers aren't reachable via GZ_SIM_RESOURCE_PATH (or the
+    # per-world models_fuel/ subdir), gz-sim silently drops the trees.
+    # Check up front and warn loudly so the operator knows to set the
+    # path before launching the world.
+    if foliage_style == 'fuel':
+        extra_roots = [os.path.join(os.path.abspath(output_dir), 'models_fuel')]
+        missing = tree_processor.missing_fuel_wrappers(extra_roots=extra_roots)
+        if missing:
+            logger.warning(
+                "--foliage-style fuel: wrapper model(s) "
+                f"{missing} not found on GZ_SIM_RESOURCE_PATH "
+                f"(or in {extra_roots[0]}). Gazebo will fail to resolve "
+                f"the matching model:// URIs and trees of those variants "
+                f"will be missing. Either set GZ_SIM_RESOURCE_PATH to a "
+                f"directory containing tree_fuel_<i>/model.sdf, or drop "
+                f"back to --foliage-style cartoon."
+            )
+
     origin_location = (latitude, longitude)
     # Cache key includes radius — the WGS84 bbox depends on it, and a cache
     # file produced at one radius will have the wrong content if reused at
