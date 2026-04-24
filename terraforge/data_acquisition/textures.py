@@ -1,5 +1,7 @@
+import concurrent.futures
 import math
 import os
+import threading
 from dataclasses import dataclass
 from io import BytesIO
 from typing import Callable, Optional
@@ -24,6 +26,12 @@ MAX_TILES = 4096
 # (common on laptops/Jetsons). 8192 fits comfortably in 1 GB and keeps
 # ~0.5 m/px detail on a 4 km world. Override via --max-texture-size.
 DEFAULT_MAX_TEXTURE_PX = 8192
+
+# Default concurrency for tile downloads. 8 keeps us polite to most tile
+# servers (Mapbox, MapTiler, Bing publish per-IP rate limits but typically
+# allow bursts well above this) while still giving a 6-8x wall-clock speedup
+# over serial on a 500-tile mosaic. Override via download_satellite_texture_tiles.
+DEFAULT_TILE_WORKERS = 8
 
 
 @dataclass(frozen=True)
@@ -309,6 +317,8 @@ def download_satellite_texture_tiles(
     max_tiles: int = MAX_TILES,
     utm_crs: Optional[str] = None,
     max_texture_px: int = DEFAULT_MAX_TEXTURE_PX,
+    max_workers: int = DEFAULT_TILE_WORKERS,
+    progress: Optional[Callable[[str], None]] = None,
 ):
     """Download satellite texture tiles for a location/radius from the chosen provider.
 
@@ -418,52 +428,87 @@ def download_satellite_texture_tiles(
     failed_tiles = []
     cache_hits = 0
     fetched = 0
-    for x_tile in tiles_x:
-        for y_tile in tiles_y:
-            # Tile filename includes provider + zoom so caches from
-            # different runs at the same (lat, lon, radius) don't stomp.
-            tile_filename = f"tile_{provider}_z{zoom}_{x_tile}_{y_tile}.png"
-            tile_output_path = os.path.join(output_dir, tile_filename)
+    # Reuse a single Session across the pool so keep-alive works and the
+    # adapter's connection pool spans every worker, cutting TLS/handshake
+    # overhead on big pulls.
+    session = requests.Session()
+    session.headers.update(headers)
+
+    # Per-tile filenames include provider + zoom so caches from different
+    # runs at the same (lat, lon, radius) don't stomp.
+    tile_specs = [
+        (x_tile, y_tile, os.path.join(
+            output_dir, f"tile_{provider}_z{zoom}_{x_tile}_{y_tile}.png"))
+        for x_tile in tiles_x
+        for y_tile in tiles_y
+    ]
+    total_tiles = len(tile_specs)
+
+    def _fetch_one(spec):
+        x_tile, y_tile, tile_output_path = spec
+        if os.path.exists(tile_output_path) and os.path.getsize(tile_output_path) > 0:
             try:
-                if os.path.exists(tile_output_path) and os.path.getsize(tile_output_path) > 0:
-                    tile_image = Image.open(tile_output_path).convert("RGB")
-                    cache_hits += 1
-                else:
-                    tile_url = p.tile_url(zoom, x_tile, y_tile, api_key)
+                return (x_tile, y_tile, Image.open(tile_output_path).convert("RGB"),
+                        'cache', None)
+            except Exception as e:
+                # Corrupt cache file — re-fetch below.
+                logger.warning(
+                    f"tile {x_tile}_{y_tile}: corrupt cache ({e}); re-fetching"
+                )
+        tile_url = p.tile_url(zoom, x_tile, y_tile, api_key)
 
-                    def _fetch():
-                        r = requests.get(
-                            tile_url, headers=headers, stream=True, timeout=30,
-                        )
-                        r.raise_for_status()
-                        return r.content
+        def _do():
+            r = session.get(tile_url, stream=True, timeout=30)
+            r.raise_for_status()
+            return r.content
 
-                    # Retry transient tile failures (connection resets,
-                    # 429s, 5xx) before giving up. Without this a single
-                    # hiccup in a 500-tile mosaic aborts the whole pull.
-                    content = retry_call(
-                        _fetch,
-                        attempts=3,
-                        initial_delay=1.0,
-                        exceptions=(requests.exceptions.RequestException,),
-                        label=f"tile {x_tile}_{y_tile}",
-                    )
-                    tile_image = Image.open(BytesIO(content)).convert("RGB")
-                    tile_image.save(tile_output_path)
-                    fetched += 1
-                    logger.debug(
-                        f"Downloaded tile {x_tile}_{y_tile} from "
-                        f"{scrub_key(tile_url, api_key)} to {tile_output_path}"
-                    )
+        try:
+            content = retry_call(
+                _do,
+                attempts=3,
+                initial_delay=1.0,
+                exceptions=(requests.exceptions.RequestException,),
+                label=f"tile {x_tile}_{y_tile}",
+            )
+        except Exception as e:
+            return (x_tile, y_tile, None, 'failed', e)
+        try:
+            img = Image.open(BytesIO(content)).convert("RGB")
+            img.save(tile_output_path)
+        except Exception as e:
+            return (x_tile, y_tile, None, 'failed', e)
+        return (x_tile, y_tile, img, 'fetched', None)
+
+    # Paste onto merged_image from the main loop (PIL.Image.paste is NOT
+    # thread-safe); fetches run in parallel, we collect and paste here.
+    # Report progress roughly every 5 % so the GUI bar moves during long
+    # pulls without spamming the log.
+    report_every = max(1, total_tiles // 20)
+    paste_lock = threading.Lock()  # kept around for any future parallel-paste
+    completed = 0
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, max_workers)) as pool:
+        for res in pool.map(_fetch_one, tile_specs):
+            x_tile, y_tile, img, status, err = res
+            completed += 1
+            if status == 'cache':
+                cache_hits += 1
+            elif status == 'fetched':
+                fetched += 1
+            else:
+                logger.error(f"Error on tile {x_tile}_{y_tile}: {err}")
+                failed_tiles.append((x_tile, y_tile))
+                continue
+            with paste_lock:
                 x_offset = (x_tile - top_left_tile[0]) * tile_size
                 y_offset = (y_tile - top_left_tile[1]) * tile_size
-                merged_image.paste(tile_image, (x_offset, y_offset))
-            except requests.exceptions.RequestException as e:
-                logger.error(f"Error downloading tile {x_tile}_{y_tile}: {e}")
-                failed_tiles.append((x_tile, y_tile))
-            except Exception as e:
-                logger.error(f"Error processing tile {x_tile}_{y_tile}: {e}")
-                failed_tiles.append((x_tile, y_tile))
+                merged_image.paste(img, (x_offset, y_offset))
+            if progress is not None and (completed % report_every == 0
+                                         or completed == total_tiles):
+                progress(
+                    f"Tiles: {completed}/{total_tiles} "
+                    f"({cache_hits} cached, {fetched} downloaded, "
+                    f"{len(failed_tiles)} failed)"
+                )
 
     total = cache_hits + fetched + len(failed_tiles)
     logger.info(

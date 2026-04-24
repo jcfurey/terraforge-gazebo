@@ -192,6 +192,7 @@ def run_generate_world(
             utm_crs=converter.utm_crs_string,
             max_texture_px=(max_texture_px if max_texture_px is not None
                             else textures.DEFAULT_MAX_TEXTURE_PX),
+            progress=_log,
         )
 
     # DEM reprojection uses the same converter created above, so both the
