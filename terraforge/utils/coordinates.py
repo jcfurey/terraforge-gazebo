@@ -7,24 +7,26 @@ from terraforge.utils.logging import logger
 class CoordinateConverter:
     def __init__(self, origin_location_wgs84: tuple):
         self.origin_location_wgs84 = origin_location_wgs84
-        self.utm_zone = self._determine_utm_zone(origin_location_wgs84[1])
+        lat, lon = origin_location_wgs84[0], origin_location_wgs84[1]
+        self.utm_zone = self._determine_utm_zone(lon)
+        self.northern_hemisphere = lat >= 0
         self.wgs84_to_utm_transformer = Transformer.from_crs('EPSG:4326', self.utm_crs_string, always_xy=True)
         self.utm_to_wgs84_transformer = Transformer.from_crs(self.utm_crs_string, "EPSG:4326", always_xy=True)
 
-        self.origin_utm_x, self.origin_utm_y = self.wgs84_to_utm_transformer.transform(origin_location_wgs84[1], origin_location_wgs84[0])
-        logger.info(f"Coordinate Converter initialized with origin WGS84: {origin_location_wgs84}, UTM Zone: {self.utm_zone}, UTM CRS: {self.utm_crs_string}, Origin UTM: ({self.origin_utm_x}, {self.origin_utm_y})")
+        self.origin_utm_x, self.origin_utm_y = self.wgs84_to_utm_transformer.transform(lon, lat)
+        logger.info(f"Coordinate Converter initialized with origin WGS84: {origin_location_wgs84}, UTM Zone: {self.utm_zone}{'N' if self.northern_hemisphere else 'S'}, UTM CRS: {self.utm_crs_string}, Origin UTM: ({self.origin_utm_x}, {self.origin_utm_y})")
 
     @property
     def utm_crs_string(self):
-        return self._get_utm_crs_string(self.utm_zone)
-    
-    def _get_utm_crs_string(self, utm_zone):
-        if utm_zone > 0:
-            return f"EPSG:326{utm_zone:02d}" # UTM North
-        else:
-            return f"EPSG:327{-utm_zone:02d}" # UTM South
+        return self._get_utm_crs_string(self.utm_zone, self.northern_hemisphere)
 
-    def _determine_utm_zone(self, longitude_degrees):
+    @staticmethod
+    def _get_utm_crs_string(utm_zone, northern_hemisphere):
+        prefix = "326" if northern_hemisphere else "327"
+        return f"EPSG:{prefix}{utm_zone:02d}"
+
+    @staticmethod
+    def _determine_utm_zone(longitude_degrees):
         utm_zone = int((longitude_degrees + 180) / 6) + 1
         if utm_zone > 60:
             utm_zone = 1
