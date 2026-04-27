@@ -109,10 +109,12 @@ def process_dem_to_heightmap(dem_filepath: str, output_heightmap_path: str) -> d
         # callers offset the heightmap by -origin_val to plant the origin
         # at real ground level. Fall back to the valid-pixel mean if the
         # center itself is nodata (shouldn't happen for a correctly-sized
-        # DEM centered on the origin, but be defensive).
+        # DEM centered on the origin, but be defensive). Index into the
+        # numpy array we already read at line 77 — a second band.ReadAsArray
+        # would round-trip through GDAL for nothing.
         cx = width // 2
         cy = height // 2
-        origin_raw = float(band.ReadAsArray(cx, cy, 1, 1)[0][0])
+        origin_raw = float(raster_array[cy, cx])
         if nodata is not None and origin_raw == nodata:
             origin_val = float(np.mean(raster_array[valid_mask]))
             logger.warning(

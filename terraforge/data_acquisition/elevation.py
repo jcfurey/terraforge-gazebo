@@ -68,6 +68,20 @@ def _calculate_bounds_wgs84(location: tuple, radius_meters: float) -> tuple:
     west_lon, south_lat = to_wgs.transform(cx_utm - radius_meters, cy_utm - radius_meters)
     east_lon, north_lat = to_wgs.transform(cx_utm + radius_meters, cy_utm + radius_meters)
 
+    # Antimeridian crossing: a request near lon=±180° wraps east_lon back to
+    # the opposite sign, producing west_lon > east_lon. Downstream consumers
+    # (elevation.clip, gdal.Warp, the satellite tile fetcher) all assume an
+    # ordered (west < east) bbox and silently produce zero-data output otherwise.
+    # Fail loudly here rather than chase the symptom three stages downstream.
+    if west_lon > east_lon:
+        raise RuntimeError(
+            f"Bbox crosses the antimeridian "
+            f"(W={west_lon:.4f}°, E={east_lon:.4f}°) for origin "
+            f"({lat:.4f}°, {lon:.4f}°) ± {radius_meters} m. Antimeridian-"
+            f"crossing worlds are not supported by the SRTM/OSM/tile "
+            f"fetchers used here."
+        )
+
     return (west_lon, south_lat, east_lon, north_lat)
 
 
@@ -144,7 +158,7 @@ def reproject_dem_to_utm(
     # stay tagged rather than leaking the raw -32768 sentinel into downstream
     # min/max math (which happened before this fix — blew up height_amplitude
     # to tens of kilometers). SRTM3 sets band nodata to -32768; user-supplied
-    # DEMs may use a different value or none at all.
+    # DEMs (--dem-file) may use a different value or none at all.
     src_ds = gdal.Open(src_path)
     if src_ds is None:
         raise RuntimeError(f"Failed to open source DEM for nodata probe: {src_path}")
@@ -152,6 +166,20 @@ def reproject_dem_to_utm(
         src_nodata = src_ds.GetRasterBand(1).GetNoDataValue()
     finally:
         src_ds = None
+
+    if src_nodata is None:
+        # No nodata declared on source. The UTM output bbox can extend past
+        # the source DEM's coverage (especially for a user-supplied --dem-file
+        # that's tightly cropped); without a sentinel, gdal.Warp fills those
+        # pixels with bilinear-interpolated edge values that look real to
+        # process_dem_to_heightmap and bias the min/max + normalization.
+        # Pick a value safely below any real Earth elevation (Marianas Trench
+        # ≈ -11 km) so the warp's fill is detectable downstream.
+        src_nodata = -99999.0
+        logger.warning(
+            f"Source DEM {src_path} has no nodata value; using sentinel "
+            f"{src_nodata:.0f} m to tag pixels outside source coverage."
+        )
 
     logger.info(
         f"Reprojecting DEM {src_path} -> {dst_path}: "
