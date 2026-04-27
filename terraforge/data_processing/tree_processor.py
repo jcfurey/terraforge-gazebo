@@ -6,6 +6,7 @@ one reusable ``tree_generic_<variant>`` model and place many ``<include>``
 instances in the world — avoiding thousands of per-instance SDF files.
 """
 
+import hashlib
 import json
 import math
 import os
@@ -127,6 +128,19 @@ _CANOPY_JITTER = 0.2
 _TRUNK_H_JITTER = 0.15
 
 
+def _stable_seed(*parts) -> int:
+    """Return a deterministic 32-bit seed from string-castable ``parts``.
+
+    Replaces ``hash(...)`` for per-tree RNG seeding: Python's built-in
+    ``hash()`` of strings is randomized per process (PYTHONHASHSEED defaults
+    to a random value since 3.3), so the same ``link_name`` yields a
+    different seed every run — silently breaking the per-tree
+    reproducibility this module's docstrings promise.
+    """
+    payload = '|'.join(str(p) for p in parts).encode('utf-8')
+    return int.from_bytes(hashlib.sha1(payload).digest()[:4], 'big')
+
+
 def _rand_color(palette, jitter_rng) -> tuple:
     r, g, b = palette[jitter_rng.randrange(len(palette))]
     # Small hue noise so even within a palette entry, adjacent trees vary.
@@ -224,8 +238,9 @@ def _tree_link_sdf(link_name: str, pose_xyz: tuple, variant_idx: int) -> str:
     trunk_h, trunk_r, canopy_half_h, canopy_r, shape = _TREE_VARIANT_CONFIGS[variant_idx]
     px, py, pz = pose_xyz
     # Deterministic per-tree RNG keyed on (link_name, variant_idx). Keeps
-    # a given regen reproducible while giving each tree a unique seed.
-    rng = random.Random(hash((link_name, variant_idx)) & 0xFFFFFFFF)
+    # a given regen reproducible while giving each tree a unique seed —
+    # see _stable_seed for why we cannot use Python's randomized hash().
+    rng = random.Random(_stable_seed(link_name, variant_idx))
 
     # Apply per-instance jitter.
     trunk_h_i = trunk_h * (1.0 + rng.uniform(-_TRUNK_H_JITTER, _TRUNK_H_JITTER))
@@ -249,7 +264,7 @@ def _tree_link_sdf(link_name: str, pose_xyz: tuple, variant_idx: int) -> str:
 
     return f"""    <link name='{link_name}'>
       <pose>{px:.3f} {py:.3f} {pz:.3f} 0 0 {yaw:.3f}</pose>
-      <visual name='trunk'>
+      <visual name='trunk_visual'>
         <pose>0 0 {trunk_z:.3f} 0 0 0</pose>
         <geometry><cylinder><radius>{trunk_r:.3f}</radius><length>{trunk_h_i:.3f}</length></cylinder></geometry>
         <material>
@@ -257,7 +272,7 @@ def _tree_link_sdf(link_name: str, pose_xyz: tuple, variant_idx: int) -> str:
           <diffuse>{r_t:.3f} {g_t:.3f} {b_t:.3f} 1</diffuse>
         </material>
       </visual>
-      <collision name='trunk'>
+      <collision name='trunk_collision'>
         <pose>0 0 {trunk_z:.3f} 0 0 0</pose>
         <geometry><cylinder><radius>{trunk_r:.3f}</radius><length>{trunk_h_i:.3f}</length></cylinder></geometry>
       </collision>
@@ -371,9 +386,9 @@ def write_fuel_wrappers(dest_dir: str) -> list:
         if os.path.isfile(sdf_path):
             continue
         os.makedirs(model_dir, exist_ok=True)
-        with open(sdf_path, 'w') as f:
+        with open(sdf_path, 'w', encoding='utf-8') as f:
             f.write(_fuel_wrapper_sdf(name, variant_idx))
-        with open(cfg_path, 'w') as f:
+        with open(cfg_path, 'w', encoding='utf-8') as f:
             f.write(_fuel_wrapper_config(name))
         written.append(name)
     return written
@@ -421,7 +436,7 @@ def _tree_fuel_include_sdf(unique_name: str, pose_xyz: tuple, variant_idx: int) 
     needed here — visual variation comes from the 5 wrapper scales and yaw.
     """
     px, py, pz = pose_xyz
-    rng = random.Random(hash((unique_name, variant_idx)) & 0xFFFFFFFF)
+    rng = random.Random(_stable_seed(unique_name, variant_idx))
     yaw = rng.uniform(0.0, 6.2832)
     return (
         f"<include>\n"
@@ -483,7 +498,7 @@ def _load_building_polygons_gazebo(buildings_geojson_path: str, converter, world
         return gx, gy
 
     try:
-        with open(buildings_geojson_path) as f:
+        with open(buildings_geojson_path, encoding='utf-8') as f:
             data = json.load(f)
     except Exception as e:
         logger.warning(f"Could not load buildings for tree exclusion: {e}")
@@ -686,7 +701,8 @@ def process_osm_trees_to_sdf(osm_filepath: str, models_dir: str, origin_wgs84: t
 
     Handles both point features (``natural=tree``) and polygon features
     (``natural=wood`` / ``landuse=forest``), scattering synthetic trees inside
-    each forest polygon at ``FOREST_DENSITY`` up to ``MAX_FOREST_TREES``.
+    each polygon at the per-class density declared in ``_POLYGON_CLASSES``,
+    capped globally at ``MAX_FOREST_TREES``.
 
     ``foliage_style`` selects the emission mode:
 
@@ -732,7 +748,7 @@ def process_osm_trees_to_sdf(osm_filepath: str, models_dir: str, origin_wgs84: t
             world_half_extent_m, world_half_extent_m,
         )
 
-    with open(osm_filepath) as f:
+    with open(osm_filepath, encoding='utf-8') as f:
         osm_data = json.load(f)
 
     def in_world(x, y):
@@ -821,11 +837,16 @@ def process_osm_trees_to_sdf(osm_filepath: str, models_dir: str, origin_wgs84: t
             length = line_local.length
             target = min(int(length * _LINESTRING_DENSITY),
                          forest_tree_budget)
+            # Decrement the budget by trees actually placed (not by `target`),
+            # since add_tree rejects cloud-masked / out-of-world candidates.
+            # Decrementing optimistically would silently exhaust the budget on
+            # cloudy or edge-of-world polygons before reaching the cap.
+            before = len(placements)
             for i in range(target):
                 t = (i + 0.5) / max(target, 1)
                 pt = line_local.interpolate(t, normalized=True)
                 add_tree(pt.x, pt.y, variant_pool=_VARIANT_SHRUB)
-            forest_tree_budget -= target
+            forest_tree_budget -= (len(placements) - before)
             line_count += 1
 
         elif gtype in ('Polygon', 'MultiPolygon'):
@@ -846,9 +867,12 @@ def process_osm_trees_to_sdf(osm_filepath: str, models_dir: str, origin_wgs84: t
             pts = _scatter_in_polygon(
                 polygon_local, cfg['density'], forest_tree_budget, rng
             )
-            forest_tree_budget -= len(pts)
+            # Decrement the budget by trees actually placed (not by len(pts)),
+            # since add_tree rejects cloud-masked / out-of-world candidates.
+            before = len(placements)
             for x, y in pts:
                 add_tree(x, y, variant_pool=cfg['variants'])
+            forest_tree_budget -= (len(placements) - before)
             poly_count += 1
 
     osm_count = len(placements)
