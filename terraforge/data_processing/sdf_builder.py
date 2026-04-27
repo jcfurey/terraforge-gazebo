@@ -1,9 +1,25 @@
 import math
+import os
+from urllib.parse import quote
 
 from jinja2 import Environment, FileSystemLoader
 
 from terraforge.utils.logging import logger
 from terraforge.utils.naming import safe_identifier
+
+
+def _path_to_file_uri(path):
+    """Convert an absolute filesystem path to a percent-encoded file:// URI.
+
+    Spaces, ampersands, and other URI-reserved characters in the path
+    would otherwise either break libsdformat's URI parser or produce
+    invalid SDF when interpolated into the template. Returns ``None`` if
+    ``path`` is None so callers can pass through optional asset paths.
+    """
+    if path is None:
+        return None
+    abs_path = os.path.abspath(path)
+    return 'file://' + quote(abs_path, safe='/')
 
 
 # Tile size for the compound static scene. Buildings and trees are grouped
@@ -236,11 +252,21 @@ class SDFWorldBuilder:
                               level_active_radius_m=DEFAULT_LEVEL_ACTIVE_RADIUS_M,
                               performer_ref=DEFAULT_PERFORMER_REF,
                               enable_level_streaming=True,
-                              foliage_style='cartoon'):
+                              foliage_style='cartoon',
+                              origin_lat=None, origin_lon=None,
+                              origin_elev_m=None):
         # performer_ref is interpolated into <model name>, <performer name>,
         # and <ref> elements in world_template.sdf.j2 without XML escaping.
         # Reject anything that would break SDF parsing.
         performer_ref = safe_identifier(performer_ref, field='performer_ref')
+        # Pre-encode every asset path as a file:// URI so the template can
+        # emit them verbatim. Doing this in the template via Jinja autoescape
+        # would also escape the pre-built tile.model_sdf / fuel_tree_includes_sdf
+        # blobs (which are already valid SDF), so we escape only the user-
+        # controlled paths here instead.
+        heightmap_uri = _path_to_file_uri(heightmap_path)
+        texture_uri = _path_to_file_uri(texture_path)
+        flat_normal_uri = _path_to_file_uri(flat_normal_path)
         half_extent_m = extent_meters / 2.0
         scene_tiles = build_scene_tiles(
             buildings, trees, roads, half_extent_m, tile_size_m=tile_size_m,
@@ -272,9 +298,9 @@ class SDFWorldBuilder:
             )
         template = self.template_env.get_template('world_template.sdf.j2')
         rendered_sdf = template.render(
-            heightmap_path=heightmap_path,
-            texture_path=texture_path,
-            flat_normal_path=flat_normal_path,
+            heightmap_uri=heightmap_uri,
+            texture_uri=texture_uri,
+            flat_normal_uri=flat_normal_uri,
             scene_tiles=scene_tiles,
             fuel_tree_includes_sdf=fuel_tree_includes_sdf,
             extent_meters=extent_meters,
@@ -286,11 +312,14 @@ class SDFWorldBuilder:
             level_z_extent_m=level_z_extent_m,
             performer_ref=performer_ref,
             foliage_style=foliage_style,
+            origin_lat=origin_lat,
+            origin_lon=origin_lon,
+            origin_elev_m=origin_elev_m,
         )
         logger.info("SDF world template rendered.")
         return rendered_sdf
 
     def save_sdf_world_file(self, sdf_content, output_path):
-        with open(output_path, 'w') as sdf_file:
+        with open(output_path, 'w', encoding='utf-8') as sdf_file:
             sdf_file.write(sdf_content)
         logger.info(f"SDF world file saved to {output_path}")

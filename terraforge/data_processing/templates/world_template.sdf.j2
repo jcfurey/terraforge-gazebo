@@ -5,11 +5,29 @@
     <!-- 4 ms step (250 Hz physics). 1 ms put gzserver at ~20% RTF on the
          Vicksburg-scale world (370 static collisions + heightmap). 4 ms is
          comfortable for bullet-featherstone on a ground vehicle and restores
-         RTF close to 1.0 without noticeably degrading wheel/contact fidelity. -->
-    <physics name='4ms' type='ignored'>
+         RTF close to 1.0 without noticeably degrading wheel/contact fidelity.
+         The engine is selected via the <engine> child of the physics-system
+         <plugin> below, so no `type` attribute is needed here (and the
+         previous `type='ignored'` value was not a valid SDF physics type). -->
+    <physics name='4ms'>
       <max_step_size>0.004</max_step_size>
       <real_time_factor>1.0</real_time_factor>
     </physics>
+
+    {% if origin_lat is not none and origin_lon is not none %}
+    <!-- World origin in WGS84. Lets in-sim NavSat / GPS plugins map the
+         ENU world frame back to (lat, lon, alt) so they can publish
+         realistic sensor_msgs/NavSatFix readings. heading_deg=0 means
+         the +X world axis points East and +Y points North (gz-sim's
+         default ENU convention). -->
+    <spherical_coordinates>
+      <surface_model>EARTH_WGS84</surface_model>
+      <latitude_deg>{{ "%.8f"|format(origin_lat) }}</latitude_deg>
+      <longitude_deg>{{ "%.8f"|format(origin_lon) }}</longitude_deg>
+      <elevation>{{ "%.3f"|format(origin_elev_m or 0.0) }}</elevation>
+      <heading_deg>0</heading_deg>
+    </spherical_coordinates>
+    {% endif %}
 
     <!-- Physics engine: bullet-featherstone (NOT gazebo's default dartsim).
          Rationale: dartsim does not implement SDF <heightmap> collision nor
@@ -120,7 +138,7 @@
             </friction>
           </surface>
         </collision>
-        {% if not heightmap_path %}
+        {% if not heightmap_uri %}
         <visual name='visual'>
           <cast_shadows>false</cast_shadows>
           <geometry>
@@ -139,7 +157,7 @@
       </link>
     </model>
 
-    {% if heightmap_path %}
+    {% if heightmap_uri %}
     <!-- Terrain is VISUAL ONLY. No <collision> block: gz-sim's
          bullet-featherstone and dartsim physics backends both reject
          <heightmap> collision ("Unsupported collision geometry type [6]"
@@ -157,10 +175,10 @@
         <visual name='visual'>
           <geometry>
             <heightmap>
-              <uri>file://{{ heightmap_path }}</uri>
+              <uri>{{ heightmap_uri }}</uri>
               <size>{{ extent_meters }} {{ extent_meters }} {{ height_amplitude }}</size>
               <pos>0 0 {{ terrain_z_offset }}</pos>
-              {% if texture_path %}
+              {% if texture_uri and flat_normal_uri %}
               <!-- NOTE: <normal> points at a FLAT normal map (all pixels
                    RGB(128, 128, 255) = tangent-space up). We cannot just
                    reuse the diffuse satellite PNG here — the parser treats
@@ -170,11 +188,15 @@
                    cannot omit <normal>: sdf1.10 defaults it to __default__,
                    and gz-sim's parser aborts with "uri [__default__] could
                    not be resolved" on load. A flat normal PNG is the
-                   minimum valid stand-in. -->
+                   minimum valid stand-in.
+
+                   Both URIs must be present together — the texture block
+                   is gated on both so a half-configured caller can't
+                   produce a `file://None` <normal> child. -->
               <texture>
                 <size>{{ extent_meters }}</size>
-                <diffuse>file://{{ texture_path }}</diffuse>
-                <normal>file://{{ flat_normal_path }}</normal>
+                <diffuse>{{ texture_uri }}</diffuse>
+                <normal>{{ flat_normal_uri }}</normal>
               </texture>
               {% endif %}
             </heightmap>

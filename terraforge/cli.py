@@ -473,6 +473,13 @@ def run_generate_world(
         performer_ref=performer_ref,
         enable_level_streaming=not disable_level_streaming,
         foliage_style=foliage_style,
+        # Origin lat/lon are the user's input; origin_elev_m is the raw DEM
+        # elevation at the centre pixel (already used to compute terrain_z_offset
+        # above). Together they let the template emit <spherical_coordinates>
+        # so in-sim NavSat plugins can map the ENU world frame back to WGS84.
+        origin_lat=latitude,
+        origin_lon=longitude,
+        origin_elev_m=dem_stats['origin'],
     )
     builder.save_sdf_world_file(sdf_content, output_sdf_world_path)
 
