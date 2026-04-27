@@ -1,5 +1,6 @@
 import logging
 import os
+import shutil
 
 import click
 from osgeo import gdal
@@ -146,9 +147,10 @@ def run_generate_world(
     origin_location = (latitude, longitude)
     # Cache key includes radius — the WGS84 bbox depends on it, and a cache
     # file produced at one radius will have the wrong content if reused at
-    # another. Bumping the key format (_r{int(radius)}) also sidesteps any
-    # pre-existing caches generated with the old Web-Mercator bbox math.
-    location_name = f"loc_{latitude:.4f}_{longitude:.4f}_r{int(radius)}"
+    # another. The :.1f format keeps fractional radii distinct (radius=1500
+    # vs 1500.5 used to collide on int(radius)). Bumping the key format
+    # implicitly invalidates pre-existing caches with the old `r{int}` shape.
+    location_name = f"loc_{latitude:.4f}_{longitude:.4f}_r{radius:.1f}"
     output_dir = os.path.abspath(output_dir)
 
     dem_cache_path = os.path.join(config.DEM_CACHE_DIR, f"{location_name}_dem.tif")
@@ -165,13 +167,13 @@ def run_generate_world(
     # reproject to fit). For aerial flyovers, source CRS is auto-detected
     # from the file's metadata — works for any CRS gdal can read (UTM, state
     # plane, EPSG:4326, etc.).
-    dem_source_path = dem_cache_path
     if dem_file is not None:
         dem_source_path = os.path.abspath(dem_file)
         if not os.path.isfile(dem_source_path):
             raise click.UsageError(f"--dem-file does not exist: {dem_source_path}")
         _log(f"Using user-supplied DEM: {dem_source_path}")
     else:
+        dem_source_path = dem_cache_path
         _log("Downloading SRTM3 DEM...")
         _pct(5)
         elevation.download_dem(origin_location, radius, dem_cache_path)
@@ -179,13 +181,19 @@ def run_generate_world(
 
     _log("Downloading OSM layers...")
     _pct(15)
+    # Each layer is its own Overpass round-trip; without per-call cancel
+    # checks the user has to wait through all four (10-30s on slow days)
+    # before the cancel takes effect.
     osm.download_osm_buildings(origin_location, radius, buildings_cache_path)
+    _check_cancel()
     osm.download_osm_trees(origin_location, radius, trees_cache_path)
+    _check_cancel()
     # Roads + parking are always fetched because the foliage mask consumes
     # them as negative rasters (no trees on asphalt, no trees in parking
     # lots) even when road rendering is disabled. Road emission stays gated
     # on --with-roads below.
     osm.download_osm_roads(origin_location, radius, roads_cache_path)
+    _check_cancel()
     osm.download_osm_parking(origin_location, radius, parking_cache_path)
 
     # Need the UTM CRS before the tile download so we can ask the downloader
@@ -340,15 +348,25 @@ def run_generate_world(
     # Let the masks scale their morphology kernels by meters-per-pixel so
     # thresholds behave the same at any zoom level.
     texture_meters_per_px = None
-    if os.path.exists(texture_source_path):
+    texture_available = os.path.exists(texture_source_path)
+    if texture_available:
         try:
-            from PIL import Image as _Img
-            with _Img.open(texture_source_path) as _tex:
+            with Image.open(texture_source_path) as _tex:
                 tex_w = _tex.size[0]
             texture_meters_per_px = (2.0 * radius) / tex_w if tex_w > 0 else None
-        except Exception:
-            texture_meters_per_px = None
-    if cloud_filter and os.path.exists(texture_source_path):
+        except Exception as e:
+            # Surface the underlying read failure — without this, the
+            # downstream "mask unavailable" warning is generic and the
+            # operator has no way to tell the texture file was unreadable
+            # vs. some morphology stage tripped.
+            logger.warning(
+                f"Could not probe texture {texture_source_path} for "
+                f"meters-per-pixel ({type(e).__name__}: {e}); "
+                f"masks will be skipped."
+            )
+            texture_available = False
+
+    if cloud_filter and texture_available:
         cloud_mask = cloud_mask_mod.build_cloud_mask(
             texture_source_path, texture_bbox,
             meters_per_pixel=texture_meters_per_px,
@@ -358,7 +376,7 @@ def run_generate_world(
     # buildings) BEFORE the tree processor so its image-based scatter path
     # can consult the precomputed mask instead of the legacy bare-EXG
     # heuristic. Mode "off" keeps the old code path in tree_processor.
-    if (foliage_mask_mode == 'rgb-osm' and os.path.exists(texture_source_path)):
+    if foliage_mask_mode == 'rgb-osm' and texture_available:
         foliage_mask = foliage_mask_mod.build_foliage_mask(
             texture_source_path, texture_bbox,
             world_half_extent_m=radius,
@@ -420,7 +438,6 @@ def run_generate_world(
         _log(f"Copying orthophoto / satellite texture as {_texext.upper()}...")
         os.makedirs(os.path.dirname(texture_output_path), exist_ok=True)
         if _texext == 'png':
-            import shutil
             shutil.copy2(texture_source_path, texture_output_path)
         else:
             # JPEG path: re-encode the source PNG/GeoTIFF into a
@@ -624,10 +641,10 @@ def generate_world(ctx, latitude, longitude, side_length, radius, output_dir,
         raise click.UsageError("Use --side-length or --radius, not both.")
     if side_length is not None:
         radius = side_length / 2.0
-    if max_heightmap_size not in elevation_processor._OGRE2_VALID_SIZES:
+    if max_heightmap_size not in elevation_processor.OGRE2_VALID_SIZES:
         raise click.UsageError(
             f"--max-heightmap-size must be one of "
-            f"{elevation_processor._OGRE2_VALID_SIZES}; got {max_heightmap_size}."
+            f"{elevation_processor.OGRE2_VALID_SIZES}; got {max_heightmap_size}."
         )
     try:
         world_name = safe_identifier(world_name, field='--world-name')

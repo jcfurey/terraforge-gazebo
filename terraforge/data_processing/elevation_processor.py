@@ -22,6 +22,10 @@ gdal.UseExceptions()
 # in cli._choose_heightmap_size caps at 1025 unless the user raises the
 # ceiling via --max-heightmap-size.
 _OGRE2_VALID_SIZES = (65, 129, 257, 513, 1025, 2049, 4097)
+# Public alias — cli.py validates --max-heightmap-size against this list,
+# and any future caller needs the same set. Underscore version retained so
+# internal references in this module don't have to be touched.
+OGRE2_VALID_SIZES = _OGRE2_VALID_SIZES
 _DEFAULT_MAX_OGRE2_SIZE = 1025
 
 
