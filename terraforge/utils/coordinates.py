@@ -54,15 +54,15 @@ class CoordinateConverter:
     def wgs84_to_gazebo(self, location_wgs84: tuple) -> tuple:
         """
         Converts WGS84 (lat, lon) directly to local Gazebo coordinates (x, y, z=0).
-        This is a convenience function combinding WGS84 to UTM and UTM to local Gazebo
+        This is a convenience function combining WGS84 to UTM and UTM to local Gazebo
         conversion.
         """
         utm_coords = self.wgs84_to_utm(location_wgs84)
         return self.utm_to_local_gazebo(utm_coords)
-    
-    def gazebo_to_utm(self, gazebo_cords: tuple) -> tuple:
+
+    def gazebo_to_utm(self, gazebo_coords: tuple) -> tuple:
         """Converts local Gazebo coordinates (x, y) back to UTM (x, y)"""
-        local_x, local_y = gazebo_cords
+        local_x, local_y = gazebo_coords
         utm_x = local_x + self.origin_utm_x
         utm_y = local_y + self.origin_utm_y
         return utm_x, utm_y

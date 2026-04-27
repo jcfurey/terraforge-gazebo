@@ -24,7 +24,17 @@ def _download(location, radius_meters, tags, output_path, label):
 
 
 def download_osm_buildings(location: tuple, radius_meters: float, output_path: str) -> int:
-    """Download OSM building footprints (polygons)."""
+    """Download OSM building footprints (polygons).
+
+    Failure policy is intentionally STRICTER than the other downloaders:
+    a buildings fetch failure re-raises and aborts the pipeline, whereas
+    trees / roads / parking failures log a warning and return 0. The
+    rationale is that a world without buildings is rarely useful (the
+    whole point of pulling OSM is the structures), while a world without
+    trees, roads, or parking polygons is a degraded but still-functional
+    sim. If you want graceful degradation here too, catch the exception
+    upstream.
+    """
     logger.info(
         f"Downloading OSM buildings for location {location} with radius "
         f"{radius_meters}m to {output_path}"

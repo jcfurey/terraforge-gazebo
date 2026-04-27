@@ -14,16 +14,28 @@
   <exec_depend>python3-click</exec_depend>
   <exec_depend>python3-gdal</exec_depend>
   <exec_depend>python3-jinja2</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
   <exec_depend>python3-pil</exec_depend>
   <exec_depend>python3-pyproj</exec_depend>
-  <exec_depend>python3-pyqt6</exec_depend>
   <exec_depend>python3-requests</exec_depend>
   <exec_depend>python3-shapely</exec_depend>
+  <!-- PyQt6 is intentionally not listed as exec_depend: it's only needed
+       for the optional `terraforge-gui` entry point, declared in setup.py
+       under extras_require={'gui': [...]}. Headless deployments shouldn't
+       pull a Qt stack via rosdep just to run the CLI. Install with
+       `pip install terraforge_gazebo[gui]` to get the GUI. -->
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>
   <test_depend>ament_pep257</test_depend>
   <test_depend>python3-pytest</test_depend>
+  <!-- Functional tests under test/ exercise shapely / numpy / PIL paths;
+       declare them as test_depend so colcon test resolves them via rosdep
+       on a clean host instead of silently skipping via importorskip. -->
+  <test_depend>python3-numpy</test_depend>
+  <test_depend>python3-pil</test_depend>
+  <test_depend>python3-pyproj</test_depend>
+  <test_depend>python3-shapely</test_depend>
 
   <export>
     <build_type>ament_python</build_type>
