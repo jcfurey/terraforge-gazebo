@@ -33,6 +33,13 @@ DEFAULT_MAX_TEXTURE_PX = 8192
 # over serial on a 500-tile mosaic. Override via download_satellite_texture_tiles.
 DEFAULT_TILE_WORKERS = 8
 
+# Web Mercator (EPSG:3857) is only defined within ±arctan(sinh(π)) ≈ ±85.0511°.
+# Past that, _deg2num / _deg2pixel call math.tan(lat) and 1/cos(lat) on values
+# that overflow or hit a divide-by-zero at exactly ±90°. Reject bboxes that
+# touch the polar regions outright rather than producing a silently corrupt
+# mosaic.
+MAX_WEBMERCATOR_LAT = 85.05112877980659
+
 
 @dataclass(frozen=True)
 class TileProvider:
@@ -157,11 +164,7 @@ def _env_var_for(provider: str) -> str:
 
 
 def _default_key_for(provider: str) -> str:
-    attr = {
-        "mapbox": "MAPBOX_API_KEY",
-        "maptiler": "MAPTILER_API_KEY",
-        "bing": "BING_MAPS_API_KEY",
-    }.get(provider)
+    attr = _KEY_ENV_BY_PROVIDER.get(provider)
     if attr is None:
         return ""
     return getattr(config, attr, "") or ""
@@ -177,7 +180,10 @@ def _pick_zoom(bbox_wgs84, max_zoom, max_tiles=MAX_TILES, forced_zoom=None):
     """
     west, south, east, north = bbox_wgs84
     if forced_zoom is not None:
-        zoom = min(int(forced_zoom), max_zoom)
+        # Floor at zoom 1: zoom 0 gives one global tile (rarely useful) and
+        # negatives blow up _deg2num's 2**zoom math. Ceiling at provider's
+        # max_zoom: deeper zooms 404.
+        zoom = max(1, min(int(forced_zoom), max_zoom))
         tl = _deg2num(north, west, zoom)
         br = _deg2num(south, east, zoom)
         tiles = (br[0] - tl[0] + 1) * (br[1] - tl[1] + 1)
@@ -323,9 +329,18 @@ def download_satellite_texture_tiles(
     """Download satellite texture tiles for a location/radius from the chosen provider.
 
     Args:
-        location: (latitude, longitude) in WGS84.
+        location: (latitude, longitude) in WGS84. Both ``location[0]`` and the
+            bbox derived from ``radius_meters`` must lie within
+            ±``MAX_WEBMERCATOR_LAT`` (~85.0511°); polar requests raise.
         radius_meters: bounding-box half-width around `location`.
         output_dir: where individual tiles and the merged `satellite_texture.png` land.
+            **Must be unique per (lat, lon, radius)**: the cached merged-mosaic
+            filename and the canonical `satellite_texture.png` are keyed only by
+            (provider, zoom, projection), so a shared `output_dir` across
+            different locations will silently serve stale data on the second
+            call. The CLI satisfies this by nesting the texture cache under
+            `<TERRAFORGE_TEXTURE_DIR>/loc_<lat>_<lon>_r<radius>_texture/`;
+            programmatic callers should follow the same pattern.
         provider: one of `PROVIDERS`. Defaults to `config.SATELLITE_TEXTURE_SOURCE`.
         api_key: API key for providers that require one. Defaults to the env var
             for the chosen provider (e.g. `MAPBOX_API_KEY` for `mapbox`).
@@ -360,6 +375,16 @@ def download_satellite_texture_tiles(
     )
 
     bbox_wgs84 = _calculate_bounds_wgs84(location, radius_meters)
+    # Web Mercator breaks beyond ±MAX_WEBMERCATOR_LAT (math.tan + 1/cos blow up
+    # at exactly ±90° and produce nonsense earlier). Reject before _deg2num
+    # silently corrupts the tile mosaic.
+    _west, _south, _east, _north = bbox_wgs84
+    if abs(_north) > MAX_WEBMERCATOR_LAT or abs(_south) > MAX_WEBMERCATOR_LAT:
+        raise RuntimeError(
+            f"bbox latitude exceeds Web Mercator limit (±{MAX_WEBMERCATOR_LAT:.4f}°): "
+            f"S={_south:.4f}, N={_north:.4f}. Satellite tile providers used here "
+            f"are EPSG:3857 and have no defined imagery at the poles."
+        )
     tile_size = 256
 
     zoom, tile_count = _pick_zoom(
