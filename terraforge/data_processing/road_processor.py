@@ -123,53 +123,57 @@ def process_osm_roads_to_sdf(osm_filepath: str, models_dir: str, origin_wgs84: t
 
     placements = []
     skipped = 0
-    with open(osm_filepath) as f:
+    feature_errors = 0
+    with open(osm_filepath, encoding='utf-8') as f:
         osm_data = json.load(f)
 
-    for feature_idx, feature in enumerate(osm_data['features']):
-        geom = feature.get('geometry', {})
-        gtype = geom.get('type')
-        props = feature.get('properties', {}) or {}
-        if gtype not in ('LineString', 'MultiLineString'):
-            skipped += 1
-            continue
-
-        line_wgs84 = shapely.geometry.shape(geom)
-        line_local = shapely.ops.transform(project, line_wgs84)
-        if line_local.is_empty or line_local.length < 0.5:
-            skipped += 1
-            continue
-
-        half_w = _half_width(props)
-        road_id = props.get('osmid', f"{feature_idx}")
-        base_name = f"road_{_sanitize(road_id)}_{feature_idx}"
-
-        # MultiLineString: iterate component lines; each becomes its own
-        # segment chain below.
-        if line_local.geom_type == 'MultiLineString':
-            component_lines = list(line_local.geoms)
-        else:
-            component_lines = [line_local]
-
-        for comp_idx, comp_line in enumerate(component_lines):
-            emitted = _emit_road_segments(
-                comp_line, half_w, base_name, comp_idx,
-                elevation_sampler=elevation_sampler,
-            )
-            if emitted == 0:
+    for feature_idx, feature in enumerate(osm_data.get('features', []) or []):
+        try:
+            geom = feature.get('geometry') or {}
+            gtype = geom.get('type')
+            props = feature.get('properties') or {}
+            if gtype not in ('LineString', 'MultiLineString'):
                 skipped += 1
+                continue
+
+            line_wgs84 = shapely.geometry.shape(geom)
+            line_local = shapely.ops.transform(project, line_wgs84)
+            if line_local.is_empty or line_local.length < 0.5:
+                skipped += 1
+                continue
+
+            half_w = _half_width(props)
+            road_id = props.get('osmid', f"{feature_idx}")
+            base_name = f"road_{_sanitize(road_id)}_{feature_idx}"
+
+            # MultiLineString: iterate component lines; each becomes its own
+            # segment chain below.
+            if line_local.geom_type == 'MultiLineString':
+                component_lines = list(line_local.geoms)
             else:
-                placements.extend(_segment_placements)
-                _segment_placements.clear()
+                component_lines = [line_local]
 
-    logger.info(f"OSM roads processed: {len(placements)} road models, {skipped} skipped")
+            for comp_idx, comp_line in enumerate(component_lines):
+                comp_placements = _emit_road_segments(
+                    comp_line, half_w, base_name, comp_idx,
+                    elevation_sampler=elevation_sampler,
+                )
+                if not comp_placements:
+                    skipped += 1
+                else:
+                    placements.extend(comp_placements)
+        except Exception as e:
+            # Per-feature defence: a single corrupt OSM way shouldn't kill
+            # the rest of the road processing pass.
+            feature_errors += 1
+            logger.debug(f"Skipping road feature {feature_idx}: {e}")
+            continue
+
+    logger.info(
+        f"OSM roads processed: {len(placements)} road models, "
+        f"{skipped} skipped, {feature_errors} on feature errors"
+    )
     return placements
-
-
-# Module-level buffer used by _emit_road_segments as a simple return
-# channel (keeps the per-segment emit function self-contained without
-# growing its signature). Cleared by the caller after each component.
-_segment_placements = []
 
 
 def _emit_road_segments(line_local, half_w, base_name, comp_idx,
@@ -181,13 +185,18 @@ def _emit_road_segments(line_local, half_w, base_name, comp_idx,
     ``sdf_builder.build_scene_tiles`` groups them into per-tile compound
     models alongside buildings and cartoon trees — no per-segment
     model.sdf is written (nothing references it via model://).
+
+    Returns a list of placement dicts (possibly empty). Returning the list
+    directly avoids the previous module-level ``_segment_placements`` global
+    that doubled as a return channel — that pattern was reentrancy-fragile
+    and surprising to readers tracing data flow.
     """
+    placements = []
     length = line_local.length
     if length < 0.5:
-        return 0
+        return placements
 
     n_segments = max(1, int(math.ceil(length / _ROAD_SEGMENT_MAX_LEN_M)))
-    emitted = 0
     for seg_idx in range(n_segments):
         t0 = seg_idx / n_segments
         t1 = (seg_idx + 1) / n_segments
@@ -229,15 +238,14 @@ def _emit_road_segments(line_local, half_w, base_name, comp_idx,
         if body_sdf is None:
             continue
 
-        _segment_placements.append({
+        placements.append({
             'model_name': link_name,
             'link_name': link_name,
             'pose_xy': pose_xy,
             'pose_z': pose_z,
             'body_sdf': body_sdf,
         })
-        emitted += 1
-    return emitted
+    return placements
 
 
 def _subline_points(line, t0, t1):

@@ -1,5 +1,6 @@
 
 import json
+import math as _math
 import os
 
 import shapely.affinity
@@ -8,6 +9,7 @@ import shapely.ops
 
 from terraforge.utils.coordinates import CoordinateConverter
 from terraforge.utils.logging import logger
+from terraforge.utils.seeding import stable_seed
 
 import random as _random
 
@@ -77,8 +79,7 @@ def _area_based_default_height(area_m2: float) -> float:
     if area_m2 <= 0:
         return DEFAULT_BUILDING_HEIGHT
     # Log interpolation: area 50 m² → 4 m, 500 → 7 m, 5000 → 12 m.
-    import math as _m
-    h = 4.0 + 2.0 * _m.log10(max(area_m2, 50.0) / 50.0)
+    h = 4.0 + 2.0 * _math.log10(max(area_m2, 50.0) / 50.0)
     return max(3.0, min(h, 20.0))
 
 
@@ -190,17 +191,26 @@ def _polygon_to_box_body_sdf(polygon, name_prefix: str, pose_xyz: tuple,
     minx, miny, maxx, maxy = polygon.bounds
     size_x = max(maxx - minx, 0.1)
     size_y = max(maxy - miny, 0.1)
+    # The polygon was centred on its centroid by the caller. For asymmetric
+    # footprints (L-shape, U-shape, …) the centroid is NOT the bbox centre,
+    # so the box has to be offset by (box_cx, box_cy) relative to pose_xyz
+    # to actually enclose the original polygon. _polygon_to_polyline_body_sdf
+    # already does this — keep the two paths consistent.
+    box_cx = (minx + maxx) / 2.0
+    box_cy = (miny + maxy) / 2.0
     r, g, b = color
     px, py, pz = pose_xyz
+    cx_world = px + box_cx
+    cy_world = py + box_cy
     cz = pz + height / 2.0
     return (
         f"      <collision name='col_{name_prefix}'>\n"
-        f"        <pose>{px:.3f} {py:.3f} {cz:.3f} 0 0 0</pose>\n"
+        f"        <pose>{cx_world:.3f} {cy_world:.3f} {cz:.3f} 0 0 0</pose>\n"
         f"        <geometry><box><size>{size_x:.3f} {size_y:.3f} "
         f"{height:.3f}</size></box></geometry>\n"
         f"      </collision>\n"
         f"      <visual name='vis_{name_prefix}'>\n"
-        f"        <pose>{px:.3f} {py:.3f} {cz:.3f} 0 0 0</pose>\n"
+        f"        <pose>{cx_world:.3f} {cy_world:.3f} {cz:.3f} 0 0 0</pose>\n"
         f"        <geometry><box><size>{size_x:.3f} {size_y:.3f} "
         f"{height:.3f}</size></box></geometry>\n"
         f"        <material>\n"
@@ -210,80 +220,6 @@ def _polygon_to_box_body_sdf(polygon, name_prefix: str, pose_xyz: tuple,
         f"        </material>\n"
         f"      </visual>"
     )
-
-
-def _polygon_to_polyline_sdf(polygon, height: float, color=(0.7, 0.7, 0.7)) -> str:
-    """Render a shapely Polygon as an SDF visual polyline extrusion + bbox collision.
-
-    dartsim does not support <polyline> as a collision geometry (only box,
-    sphere, cylinder, capsule, mesh, plane). We therefore keep the polyline as
-    a *visual* for accurate footprint rendering and use an axis-aligned bbox
-    for collision — the rover collides with a conservative hull of the
-    building, but no per-run silent collision-build failures.
-    """
-    # If it's not a simple Polygon we can express with <polyline>, fall back to bbox-only.
-    if polygon.geom_type != 'Polygon' or not polygon.is_valid or not polygon.is_simple:
-        return _polygon_to_box_sdf(polygon, height, color)
-
-    # SDF <polyline> winding must be CCW for the extrusion normal to point up.
-    if not polygon.exterior.is_ccw:
-        polygon = shapely.geometry.polygon.orient(polygon, sign=1.0)
-
-    coords = list(polygon.exterior.coords)
-    if coords[0] == coords[-1]:
-        coords = coords[:-1]
-    pts = "\n            ".join(f"<point>{x:.3f} {y:.3f}</point>" for x, y in coords)
-
-    minx, miny, maxx, maxy = polygon.bounds
-    box_x = max(maxx - minx, 0.1)
-    box_y = max(maxy - miny, 0.1)
-    box_cx = (minx + maxx) / 2.0
-    box_cy = (miny + maxy) / 2.0
-
-    r, g, b = color
-    return f"""    <static>true</static>
-    <link name='link'>
-      <collision name='collision'>
-        <pose>{box_cx:.3f} {box_cy:.3f} {height / 2.0:.3f} 0 0 0</pose>
-        <geometry><box><size>{box_x:.3f} {box_y:.3f} {height:.3f}</size></box></geometry>
-      </collision>
-      <visual name='visual'>
-        <geometry>
-          <polyline>
-            {pts}
-            <height>{height:.3f}</height>
-          </polyline>
-        </geometry>
-        <material>
-          <ambient>{r} {g} {b} 1</ambient>
-          <diffuse>{r} {g} {b} 1</diffuse>
-          <specular>0.1 0.1 0.1 1</specular>
-        </material>
-      </visual>
-    </link>"""
-
-
-def _polygon_to_box_sdf(polygon, height: float, color=(0.7, 0.7, 0.7)) -> str:
-    """Axis-aligned bounding-box fallback for tricky footprints."""
-    minx, miny, maxx, maxy = polygon.bounds
-    size_x = max(maxx - minx, 0.1)
-    size_y = max(maxy - miny, 0.1)
-    r, g, b = color
-    return f"""    <static>true</static>
-    <pose>0 0 {height / 2.0} 0 0 0</pose>
-    <link name='link'>
-      <collision name='collision'>
-        <geometry><box><size>{size_x} {size_y} {height}</size></box></geometry>
-      </collision>
-      <visual name='visual'>
-        <geometry><box><size>{size_x} {size_y} {height}</size></box></geometry>
-        <material>
-          <ambient>{r} {g} {b} 1</ambient>
-          <diffuse>{r} {g} {b} 1</diffuse>
-          <specular>0.1 0.1 0.1 1</specular>
-        </material>
-      </visual>
-    </link>"""
 
 
 _BUILDING_COLORS = {
@@ -323,7 +259,10 @@ def process_osm_buildings_to_sdf(osm_filepath: str, models_dir: str, origin_wgs8
     converter = CoordinateConverter(origin_wgs84)
     # Deterministic RNG seeded by origin coords, so two runs over the same
     # location produce the same height-jitter pattern and diffs stay clean.
-    rng = _random.Random(hash(origin_wgs84) & 0xFFFFFFFF)
+    # stable_seed (sha1-based) replaces hash() because Python's hash of
+    # tuples-containing-floats is randomized per process — the previous code
+    # silently broke the reproducibility this comment promises.
+    rng = _random.Random(stable_seed(*origin_wgs84))
 
     def project(x_lon, y_lat, z=None):
         gx, gy, _ = converter.wgs84_to_gazebo((y_lat, x_lon))
@@ -339,7 +278,7 @@ def process_osm_buildings_to_sdf(osm_filepath: str, models_dir: str, origin_wgs8
         logger.info("No OSM buildings file; skipping buildings stage.")
         return buildings
     try:
-        with open(osm_filepath, 'r') as f:
+        with open(osm_filepath, 'r', encoding='utf-8') as f:
             osm_data = json.load(f)
         polyline_count = 0
         bbox_fallback = 0
@@ -348,112 +287,134 @@ def process_osm_buildings_to_sdf(osm_filepath: str, models_dir: str, origin_wgs8
         cloud_skipped = 0
         multipart_split = 0
         invalid_geom_skipped = 0
-        for feature_idx, feature in enumerate(osm_data['features']):
-            geom_type = feature['geometry']['type']
-            if geom_type not in ('Polygon', 'MultiPolygon'):
+        feature_errors = 0
+        for feature_idx, feature in enumerate(osm_data.get('features', []) or []):
+            try:
+                geom = feature.get('geometry') or {}
+                geom_type = geom.get('type')
+                if geom_type not in ('Polygon', 'MultiPolygon'):
+                    continue
+
+                props = feature.get('properties') or {}
+                building_id = props.get('osmid', f"{feature_idx}")
+                color = _building_color(props)
+
+                polygon_wgs84 = shapely.geometry.shape(geom)
+                # Skip buildings whose centroid falls under a cloud in the
+                # satellite mosaic — we can't visually verify the footprint.
+                if cloud_mask is not None:
+                    c = polygon_wgs84.centroid
+                    if cloud_mask.is_cloudy(c.y, c.x):
+                        cloud_skipped += 1
+                        continue
+
+                # MultiPolygon buildings are common in OSM (courtyard + wings
+                # tagged as one way, industrial compounds, detached garages
+                # grouped under a single building=*). Emit each part as its
+                # own link so the visuals aren't collapsed to one bounding
+                # box. shapely.Polygon.area already subtracts interior holes
+                # for us, so a donut building gets the right footprint.
+                if polygon_wgs84.geom_type == 'MultiPolygon':
+                    parts_wgs84 = list(polygon_wgs84.geoms)
+                    if len(parts_wgs84) > 1:
+                        multipart_split += 1
+                else:
+                    parts_wgs84 = [polygon_wgs84]
+            except Exception as e:
+                # Per-feature defence: a single malformed OSM feature (null
+                # geometry, unexpected property type, exotic GeoJSON variant)
+                # used to abort the whole loop via the outer except. Skip
+                # the bad feature and keep going.
+                feature_errors += 1
+                logger.debug(f"Skipping building feature {feature_idx}: {e}")
                 continue
 
-            props = feature['properties']
-            building_id = props.get('osmid', f"{feature_idx}")
-            color = _building_color(props)
-
-            polygon_wgs84 = shapely.geometry.shape(feature['geometry'])
-            # Skip buildings whose centroid falls under a cloud in the
-            # satellite mosaic — we can't visually verify the footprint.
-            if cloud_mask is not None:
-                c = polygon_wgs84.centroid
-                if cloud_mask.is_cloudy(c.y, c.x):
-                    cloud_skipped += 1
-                    continue
-
-            # MultiPolygon buildings are common in OSM (courtyard + wings
-            # tagged as one way, industrial compounds, detached garages
-            # grouped under a single building=*). Emit each part as its
-            # own link so the visuals aren't collapsed to one bounding
-            # box. shapely.Polygon.area already subtracts interior holes
-            # for us, so a donut building gets the right footprint.
-            if polygon_wgs84.geom_type == 'MultiPolygon':
-                parts_wgs84 = list(polygon_wgs84.geoms)
-                if len(parts_wgs84) > 1:
-                    multipart_split += 1
-            else:
-                parts_wgs84 = [polygon_wgs84]
-
             for part_idx, part_wgs84 in enumerate(parts_wgs84):
-                polygon_local = shapely.ops.transform(project, part_wgs84)
-
-                # Skip sheds / outhouses / bus shelters that OSM tags as
-                # "building". These inflate model count without affecting
-                # navigation; removing them shaves scene-load time
-                # noticeably. Also guards against invalid geometry where
-                # shapely returns a non-positive area (self-intersecting,
-                # CW exterior, etc.) — those would otherwise get a
-                # nonsense area-based height.
                 try:
-                    footprint_area = polygon_local.area
-                except Exception:
-                    footprint_area = 0.0
-                if footprint_area <= 0.0:
-                    invalid_geom_skipped += 1
-                    continue
-                if footprint_area < MIN_BUILDING_AREA_M2:
-                    tiny_skipped += 1
-                    continue
+                    polygon_local = shapely.ops.transform(project, part_wgs84)
 
-                centroid_local = polygon_local.centroid
-                pose_xy = (centroid_local.x, centroid_local.y)
+                    # Skip sheds / outhouses / bus shelters that OSM tags as
+                    # "building". These inflate model count without affecting
+                    # navigation; removing them shaves scene-load time
+                    # noticeably. Also guards against invalid geometry where
+                    # shapely returns a non-positive area (self-intersecting,
+                    # CW exterior, etc.) — those would otherwise get a
+                    # nonsense area-based height.
+                    try:
+                        footprint_area = polygon_local.area
+                    except Exception:
+                        footprint_area = 0.0
+                    if footprint_area <= 0.0:
+                        invalid_geom_skipped += 1
+                        continue
+                    if footprint_area < MIN_BUILDING_AREA_M2:
+                        tiny_skipped += 1
+                        continue
 
-                # Re-center the polygon on the model's own origin so the
-                # <include> pose places it correctly in the world.
-                polygon_centered = shapely.affinity.translate(
-                    polygon_local, xoff=-pose_xy[0], yoff=-pose_xy[1]
-                )
+                    centroid_local = polygon_local.centroid
+                    pose_xy = (centroid_local.x, centroid_local.y)
 
-                # Place the building's base at the LOWEST terrain point
-                # under its footprint — stops buildings on slopes from
-                # floating on one side.
-                if elevation_sampler is not None:
-                    samples = [
-                        elevation_sampler(x + pose_xy[0], y + pose_xy[1])
-                        for x, y in list(polygon_centered.exterior.coords)[:8]
-                    ]
-                    pose_z = min(samples) if samples else 0.0
-                else:
-                    pose_z = 0.0
-
-                # For single-part buildings keep the stable historical
-                # name; for multipart splits add a _pN suffix so link
-                # names stay unique inside a tile compound.
-                if len(parts_wgs84) == 1:
-                    model_name = f"building_{_sanitize(building_id)}_{feature_idx}"
-                else:
-                    model_name = (
-                        f"building_{_sanitize(building_id)}_"
-                        f"{feature_idx}_p{part_idx}"
+                    # Re-center the polygon on the model's own origin so the
+                    # <include> pose places it correctly in the world.
+                    polygon_centered = shapely.affinity.translate(
+                        polygon_local, xoff=-pose_xy[0], yoff=-pose_xy[1]
                     )
 
-                # Height inference has access to the metric footprint
-                # area — lets the area-based extrapolation kick in when
-                # OSM gave no type.
-                height = _infer_height(props, area_m2=footprint_area, rng=rng)
+                    # Place the building's base at the LOWEST terrain point
+                    # under its footprint — stops buildings on slopes from
+                    # floating on one side.
+                    if elevation_sampler is not None:
+                        samples = [
+                            elevation_sampler(x + pose_xy[0], y + pose_xy[1])
+                            for x, y in list(polygon_centered.exterior.coords)[:8]
+                        ]
+                        pose_z = min(samples) if samples else 0.0
+                    else:
+                        pose_z = 0.0
 
-                body_sdf = _polygon_to_polyline_body_sdf(
-                    polygon_centered, name_prefix=model_name,
-                    pose_xyz=(pose_xy[0], pose_xy[1], pose_z),
-                    height=height, color=color,
-                )
-                if '<polyline>' in body_sdf:
-                    polyline_count += 1
-                else:
-                    bbox_fallback += 1
+                    # For single-part buildings keep the stable historical
+                    # name; for multipart splits add a _pN suffix so link
+                    # names stay unique inside a tile compound.
+                    if len(parts_wgs84) == 1:
+                        model_name = f"building_{_sanitize(building_id)}_{feature_idx}"
+                    else:
+                        model_name = (
+                            f"building_{_sanitize(building_id)}_"
+                            f"{feature_idx}_p{part_idx}"
+                        )
 
-                buildings.append({
-                    'model_name': model_name,
-                    'link_name': model_name,
-                    'pose_xy': pose_xy,
-                    'pose_z': pose_z,
-                    'body_sdf': body_sdf,
-                })
+                    # Height inference has access to the metric footprint
+                    # area — lets the area-based extrapolation kick in when
+                    # OSM gave no type.
+                    height = _infer_height(props, area_m2=footprint_area, rng=rng)
+
+                    body_sdf = _polygon_to_polyline_body_sdf(
+                        polygon_centered, name_prefix=model_name,
+                        pose_xyz=(pose_xy[0], pose_xy[1], pose_z),
+                        height=height, color=color,
+                    )
+                    if '<polyline>' in body_sdf:
+                        polyline_count += 1
+                    else:
+                        bbox_fallback += 1
+
+                    buildings.append({
+                        'model_name': model_name,
+                        'link_name': model_name,
+                        'pose_xy': pose_xy,
+                        'pose_z': pose_z,
+                        'body_sdf': body_sdf,
+                    })
+                except Exception as e:
+                    # Per-part defence: a failure mid-part (transform error,
+                    # degenerate centroid, sampler hiccup) shouldn't kill the
+                    # surrounding feature's other parts or any later features.
+                    feature_errors += 1
+                    logger.debug(
+                        f"Skipping building feature {feature_idx} "
+                        f"part {part_idx}: {e}"
+                    )
+                    continue
 
         logger.info(
             f"OSM buildings processed: {len(buildings)} models "
@@ -461,7 +422,8 @@ def process_osm_buildings_to_sdf(osm_filepath: str, models_dir: str, origin_wgs8
             f"{cloud_skipped} cloud-masked, "
             f"{tiny_skipped} below {MIN_BUILDING_AREA_M2:.0f} m², "
             f"{invalid_geom_skipped} invalid geometry, "
-            f"{multipart_split} multipart features split)"
+            f"{multipart_split} multipart features split, "
+            f"{feature_errors} skipped on feature/part errors)"
         )
         return buildings
     except Exception as e:

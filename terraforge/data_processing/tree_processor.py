@@ -6,7 +6,6 @@ one reusable ``tree_generic_<variant>`` model and place many ``<include>``
 instances in the world — avoiding thousands of per-instance SDF files.
 """
 
-import hashlib
 import json
 import math
 import os
@@ -21,6 +20,7 @@ from PIL import Image, ImageDraw
 
 from terraforge.utils.coordinates import CoordinateConverter
 from terraforge.utils.logging import logger
+from terraforge.utils.seeding import stable_seed
 
 # Number of reusable tree variants (different heights / canopy radii) that
 # will be generated once and referenced by each placement. Variants are sorted
@@ -128,19 +128,6 @@ _CANOPY_JITTER = 0.2
 _TRUNK_H_JITTER = 0.15
 
 
-def _stable_seed(*parts) -> int:
-    """Return a deterministic 32-bit seed from string-castable ``parts``.
-
-    Replaces ``hash(...)`` for per-tree RNG seeding: Python's built-in
-    ``hash()`` of strings is randomized per process (PYTHONHASHSEED defaults
-    to a random value since 3.3), so the same ``link_name`` yields a
-    different seed every run — silently breaking the per-tree
-    reproducibility this module's docstrings promise.
-    """
-    payload = '|'.join(str(p) for p in parts).encode('utf-8')
-    return int.from_bytes(hashlib.sha1(payload).digest()[:4], 'big')
-
-
 def _rand_color(palette, jitter_rng) -> tuple:
     r, g, b = palette[jitter_rng.randrange(len(palette))]
     # Small hue noise so even within a palette entry, adjacent trees vary.
@@ -239,8 +226,8 @@ def _tree_link_sdf(link_name: str, pose_xyz: tuple, variant_idx: int) -> str:
     px, py, pz = pose_xyz
     # Deterministic per-tree RNG keyed on (link_name, variant_idx). Keeps
     # a given regen reproducible while giving each tree a unique seed —
-    # see _stable_seed for why we cannot use Python's randomized hash().
-    rng = random.Random(_stable_seed(link_name, variant_idx))
+    # see stable_seed for why we cannot use Python's randomized hash().
+    rng = random.Random(stable_seed(link_name, variant_idx))
 
     # Apply per-instance jitter.
     trunk_h_i = trunk_h * (1.0 + rng.uniform(-_TRUNK_H_JITTER, _TRUNK_H_JITTER))
@@ -436,7 +423,7 @@ def _tree_fuel_include_sdf(unique_name: str, pose_xyz: tuple, variant_idx: int) 
     needed here — visual variation comes from the 5 wrapper scales and yaw.
     """
     px, py, pz = pose_xyz
-    rng = random.Random(_stable_seed(unique_name, variant_idx))
+    rng = random.Random(stable_seed(unique_name, variant_idx))
     yaw = rng.uniform(0.0, 6.2832)
     return (
         f"<include>\n"
