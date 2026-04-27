@@ -25,7 +25,9 @@ def _resource_path(context: LaunchContext, *args, **kwargs):
     models_fuel_dir = os.path.join(world_dir, 'models_fuel')
     existing = os.environ.get('GZ_SIM_RESOURCE_PATH', '')
     parts = [p for p in (existing, models_dir, models_fuel_dir) if p]
-    combined = ':'.join(parts)
+    # os.pathsep is ':' on Linux/macOS, ';' on Windows. Same value as a
+    # literal ':' for ROS 2 today, but harmless future-proofing.
+    combined = os.pathsep.join(parts)
     return [SetEnvironmentVariable('GZ_SIM_RESOURCE_PATH', combined)]
 
 

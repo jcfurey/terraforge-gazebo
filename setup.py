@@ -23,7 +23,7 @@ setup(
         'geocoder>=1.38',
         'Jinja2>=3.0',
         'osmnx>=2.0',
-        'Pillow>=10.0,<12',
+        'Pillow>=10.0,<13',
         'pyproj>=3.6',
         'requests>=2.31',
         'shapely>=2.0',

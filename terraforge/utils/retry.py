@@ -17,15 +17,22 @@ def retry_call(
     attempts=3,
     initial_delay=1.0,
     backoff=2.0,
+    max_delay=60.0,
     exceptions=(Exception,),
     label='operation',
 ):
     """Call ``fn()`` with exponential backoff.
 
-    Retries up to ``attempts`` times, sleeping ``initial_delay *
-    backoff**i`` seconds between attempts. Re-raises the final
-    exception if all attempts fail. Logs a warning on each retry so
-    operators can see transient failures in the run log.
+    Retries up to ``attempts`` times, sleeping
+    ``min(initial_delay * backoff**i, max_delay)`` seconds between
+    attempts. The ``max_delay`` cap (default 60 s) keeps tail latency
+    bounded — without it, ``delay *= backoff`` grows unbounded with
+    high ``attempts`` counts and a single transient outage can stall
+    a run for tens of minutes.
+
+    Re-raises the final exception if all attempts fail. Logs a
+    warning on each retry so operators can see transient failures
+    in the run log.
     """
     if attempts < 1:
         raise ValueError("attempts must be >= 1")
@@ -43,7 +50,7 @@ def retry_call(
                 f"retrying in {delay:.1f}s"
             )
             time.sleep(delay)
-            delay *= backoff
+            delay = min(delay * backoff, max_delay)
     raise last_exc
 
 

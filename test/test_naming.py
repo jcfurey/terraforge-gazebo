@@ -34,6 +34,8 @@ def test_accepts_valid_identifiers(value):
     'foo;rm -rf /',
     '.hidden',
     '-flag',
+    'trailing_dot.',
+    'trailing_dash-',
     'a<b',
     'a>b',
     'a&b',
