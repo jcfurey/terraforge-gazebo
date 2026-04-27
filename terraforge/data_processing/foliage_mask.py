@@ -50,6 +50,11 @@ import shapely.ops
 from PIL import Image, ImageDraw, ImageFilter
 
 from terraforge.utils.logging import logger
+from terraforge.utils.morphology import geodesic_dilate, open_u8
+from terraforge.utils.osm_roads import (
+    NARROW_ROAD_CLASSES,
+    half_width_for_props,
+)
 
 # Two-stage canopy thresholds. The strict trio (EXG + sigma + L cap) picks
 # "definitely canopy" seeds; the loose pair defines "plausibly vegetation"
@@ -83,10 +88,6 @@ DEFAULT_BUILDING_MARGIN_M = 6.0   # same 6 m buffer tree_processor used to apply
 # and cells are far smaller than any canopy clump, road, or parking lot.
 DEFAULT_TARGET_MPP = 5.0
 
-# Geodesic-growth limits (same pattern as cloud_mask._geodesic).
-_GEODESIC_MAX_ITERS = 50
-_GEODESIC_FILTER_PX = 5
-
 # OSM polygon tags treated as authoritative "scatter trees here" signal
 # for the positive union. Matches tree_processor._POLYGON_CLASSES keys so
 # the mask stays consistent with where OSM scatter actually fires.
@@ -100,56 +101,6 @@ _OSM_POSITIVE_TAGS = {
     ('leisure', 'park'),
     ('leisure', 'garden'),
 }
-
-# Per-highway-class half-width (metres). Mirrors road_processor._ROAD_HALF_WIDTH
-# so the mask's road exclusion matches the visual road width when roads are
-# rendered. Kept as a local copy rather than imported so foliage-mask building
-# stays decoupled from whether road emission is enabled.
-_ROAD_HALF_WIDTH = {
-    'motorway':    7.5,
-    'trunk':       6.0,
-    'primary':     5.0,
-    'secondary':   4.0,
-    'tertiary':    3.5,
-    'residential': 3.0,
-    'service':     2.5,
-    'unclassified': 3.0,
-    'track':       2.0,
-    'path':        1.0,
-    'footway':     0.8,
-    'cycleway':    1.0,
-}
-_DEFAULT_ROAD_HALF_WIDTH = 2.5
-# Tracks/paths/footways/cycleways get the narrower foliage margin since they
-# legitimately thread through canopy — full road margin would carve 4 m
-# clear corridors through every woodland trail.
-_NARROW_ROAD_CLASSES = {'track', 'path', 'footway', 'cycleway'}
-
-
-def _open_u8(arr_u8: np.ndarray, r: int) -> np.ndarray:
-    """Morphological opening (erode-then-dilate) by radius r."""
-    if r <= 0:
-        return arr_u8
-    img = Image.fromarray(arr_u8, mode='L')
-    img = img.filter(ImageFilter.MinFilter(2 * r + 1))
-    img = img.filter(ImageFilter.MaxFilter(2 * r + 1))
-    return np.asarray(img)
-
-
-def _geodesic(seed_u8: np.ndarray, envelope_u8: np.ndarray):
-    """Dilate seed iteratively, intersecting each step with envelope."""
-    current = seed_u8.copy()
-    iters = 0
-    for iters in range(1, _GEODESIC_MAX_ITERS + 1):
-        dilated = np.asarray(
-            Image.fromarray(current, mode='L')
-                 .filter(ImageFilter.MaxFilter(_GEODESIC_FILTER_PX))
-        )
-        new = np.minimum(dilated, envelope_u8)
-        if np.array_equal(new, current):
-            break
-        current = new
-    return current, iters
 
 
 def _box_mean(arr_f32: np.ndarray, window_px: int) -> np.ndarray:
@@ -232,7 +183,7 @@ def _load_polygons_gazebo(geojson_path: str, converter, world_box,
         return (gx, gy) if z is None else (gx, gy, z)
 
     try:
-        with open(geojson_path) as f:
+        with open(geojson_path, encoding='utf-8') as f:
             data = json.load(f)
     except Exception as e:
         logger.warning(f"Foliage mask: could not load {geojson_path}: {e}")
@@ -285,7 +236,7 @@ def _rasterize_road_buffers(roads_geojson_path: str, converter, world_box,
         return (gx, gy) if z is None else (gx, gy, z)
 
     try:
-        with open(roads_geojson_path) as f:
+        with open(roads_geojson_path, encoding='utf-8') as f:
             data = json.load(f)
     except Exception as e:
         logger.warning(f"Foliage mask: could not load roads {roads_geojson_path}: {e}")
@@ -298,15 +249,11 @@ def _rasterize_road_buffers(roads_geojson_path: str, converter, world_box,
             continue
         props = feat.get('properties', {}) or {}
         highway = str(props.get('highway', '')).lower()
-        hw = _ROAD_HALF_WIDTH.get(highway, _DEFAULT_ROAD_HALF_WIDTH)
-        # OSM-declared <width> overrides per-class default (same rule as
-        # road_processor._half_width so foliage mask and rendered roads agree).
-        if 'width' in props:
-            try:
-                hw = max(float(str(props['width']).rstrip(' m')) / 2.0, 0.5)
-            except (TypeError, ValueError):
-                pass
-        margin = track_margin_m if highway in _NARROW_ROAD_CLASSES else road_margin_m
+        # half_width_for_props handles the OSM <width> override + clamping —
+        # same rule road_processor uses, so the mask's road exclusion stays
+        # in lockstep with the rendered road widths.
+        hw = half_width_for_props(props)
+        margin = track_margin_m if highway in NARROW_ROAD_CLASSES else road_margin_m
         total_buffer_m = hw + margin
         try:
             line_wgs = shapely.geometry.shape(g)
@@ -379,7 +326,19 @@ class FoliageMask:
         providers and zoom levels. Sigma is computed at NATIVE resolution
         first then MAX-pooled during downsample so canopy dappling survives;
         an average-pool downsample would wash it out against smooth grass.
+
+        ``meters_per_pixel`` is required (not Optional) — the morphology
+        + sigma cost is O(window² × pixels) and silently running at native
+        resolution is hostile to memory. cli derives it from the cropped
+        texture's 2 R / max_dim.
         """
+        if meters_per_pixel is None or meters_per_pixel <= 0:
+            raise ValueError(
+                "meters_per_pixel is required and must be positive; "
+                "running foliage-mask sigma + morphology at native "
+                "resolution would blow up memory on z18+ inputs."
+            )
+
         img = Image.open(image_path).convert("RGB")
         native_w, native_h = img.size
 
@@ -451,10 +410,10 @@ class FoliageMask:
         strict_u8 = (strict_mask * 255).astype(np.uint8)
         loose_u8 = (loose_mask * 255).astype(np.uint8)
 
-        seeds = _open_u8(strict_u8, opening_px)
+        seeds = open_u8(strict_u8, opening_px)
         seed_fraction = float((seeds > 127).mean())
 
-        grown, iters = _geodesic(seeds, loose_u8)
+        grown, iters = geodesic_dilate(seeds, loose_u8)
         grown_fraction = float((grown > 127).mean())
 
         if dilation_px > 0:

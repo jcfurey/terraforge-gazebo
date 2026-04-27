@@ -36,6 +36,7 @@ import numpy as np
 from PIL import Image, ImageFilter
 
 from terraforge.utils.logging import logger
+from terraforge.utils.morphology import geodesic_dilate, open_u8
 
 # Two-stage thresholds. The strict pair detects "definitely cloud" pixels
 # (bright cloud cores) — we use these as seeds. The loose pair defines
@@ -65,13 +66,6 @@ DEFAULT_DILATION_PX = 3
 # caller supplies a finer meters_per_pixel, we downsample the image to this
 # target before morphology; if it's already coarser, we leave it alone.
 DEFAULT_TARGET_MPP = 5.0
-# Cap on geodesic-dilation iterations. Each iteration grows the seed by
-# 2 px (5x5 max filter), so 50 iters reaches ~100 px from any seed —
-# plenty for a cloud spanning hundreds of pixels in a 500x500 mosaic.
-_GEODESIC_MAX_ITERS = 50
-_GEODESIC_FILTER_PX = 5  # MaxFilter window size; must be odd.
-
-
 class CloudMask:
     def __init__(self, mask_array: np.ndarray, bbox_wgs84: tuple):
         """
@@ -119,7 +113,20 @@ class CloudMask:
              to a strict seed, so disconnected rooftops drop out.
           7. Final dilation captures the soft outer halo just outside the
              loose threshold.
+
+        ``meters_per_pixel`` is required (not Optional) — the morphology
+        cost is O(window² × pixels) and silently running at native 8 k × 8 k
+        is hostile to memory; the caller knows the source resolution and
+        must supply it. cli derives this from the cropped texture's
+        2 R / max_dim.
         """
+        if meters_per_pixel is None or meters_per_pixel <= 0:
+            raise ValueError(
+                "meters_per_pixel is required and must be positive; "
+                "running cloud-mask morphology at native resolution would "
+                "blow up memory on z18+ inputs."
+            )
+
         img = Image.open(image_path).convert("RGB")
 
         # Downsample to target_mpp before morphology. At z19 native (0.25 m/px
@@ -176,52 +183,26 @@ class CloudMask:
             )
             return instance
 
-        def _open_u8(arr_u8, r):
-            """Morphological opening (erode then dilate) by radius r."""
-            if r <= 0:
-                return arr_u8
-            img = Image.fromarray(arr_u8, mode='L')
-            img = img.filter(ImageFilter.MinFilter(2 * r + 1))
-            img = img.filter(ImageFilter.MaxFilter(2 * r + 1))
-            return np.asarray(img)
-
-        def _geodesic(seed_u8, envelope_u8):
-            """Grow ``seed_u8`` iteratively, intersecting each step with
-            ``envelope_u8``. Converges when no pixel is added. Returns the
-            final uint8 mask and the iteration count for diagnostics."""
-            current = seed_u8.copy()
-            iters = 0
-            for iters in range(1, _GEODESIC_MAX_ITERS + 1):
-                dilated = np.asarray(
-                    Image.fromarray(current, mode='L')
-                         .filter(ImageFilter.MaxFilter(_GEODESIC_FILTER_PX))
-                )
-                new = np.minimum(dilated, envelope_u8)
-                if np.array_equal(new, current):
-                    break
-                current = new
-            return current, iters
-
         strict_u8 = (strict_mask * 255).astype(np.uint8)
         loose_u8 = (loose_mask * 255).astype(np.uint8)
 
         # (2) Opening on strict seeds → seeds
-        seeds = _open_u8(strict_u8, opening_px)
+        seeds = open_u8(strict_u8, opening_px)
         seed_fraction = float((seeds > 127).mean())
 
         # (4) First geodesic growth: seeds → loose envelope
-        recon1, iters1 = _geodesic(seeds, loose_u8)
+        recon1, iters1 = geodesic_dilate(seeds, loose_u8)
         recon1_fraction = float((recon1 > 127).mean())
 
         # (5) Bridge-severing opening on the reconstruction
-        recon1_open = _open_u8(recon1, bridge_opening_px)
+        recon1_open = open_u8(recon1, bridge_opening_px)
         bridge_cut_fraction = float((recon1_open > 127).mean())
 
         # (6) Second geodesic growth: re-grow from strict seeds into the
         # bridge-severed envelope. Disconnected components (the false-
         # positive roofs that used to be reached via narrow bridges) are
         # dropped here because no strict seed can reach them.
-        recon2, iters2 = _geodesic(seeds, recon1_open)
+        recon2, iters2 = geodesic_dilate(seeds, recon1_open)
         recon2_fraction = float((recon2 > 127).mean())
 
         # (7) Final dilation captures the slightly-outside-loose halo so

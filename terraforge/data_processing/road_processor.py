@@ -17,23 +17,8 @@ import shapely.ops
 
 from terraforge.utils.coordinates import CoordinateConverter
 from terraforge.utils.logging import logger
+from terraforge.utils.osm_roads import half_width_for_props
 
-# Per-highway-class half-width (meters). Road total width = 2 * entry.
-_ROAD_HALF_WIDTH = {
-    'motorway':    7.5,
-    'trunk':       6.0,
-    'primary':     5.0,
-    'secondary':   4.0,
-    'tertiary':    3.5,
-    'residential': 3.0,
-    'service':     2.5,
-    'unclassified': 3.0,
-    'track':       2.0,
-    'path':        1.0,
-    'footway':     0.8,
-    'cycleway':    1.0,
-}
-_DEFAULT_HALF_WIDTH = 2.5
 ROAD_THICKNESS = 0.08  # meters above terrain
 ROAD_COLOR = (0.20, 0.20, 0.22)  # dark asphalt
 
@@ -45,17 +30,6 @@ ROAD_COLOR = (0.20, 0.20, 0.22)  # dark asphalt
 # hillsides (~5 deg per 20 m = ~1.8 m drop, below ROAD_THICKNESS +
 # visible z-fight margin) without multiplying output SDF size too much.
 _ROAD_SEGMENT_MAX_LEN_M = 20.0
-
-
-def _half_width(props: dict) -> float:
-    hw = _ROAD_HALF_WIDTH.get(str(props.get('highway', '')).lower(), _DEFAULT_HALF_WIDTH)
-    # OSM-declared <width> overrides per-class default.
-    if 'width' in props:
-        try:
-            return max(float(str(props['width']).rstrip(' m')) / 2.0, 0.5)
-        except (TypeError, ValueError):
-            pass
-    return hw
 
 
 def _sanitize(name):
@@ -142,7 +116,7 @@ def process_osm_roads_to_sdf(osm_filepath: str, models_dir: str, origin_wgs84: t
                 skipped += 1
                 continue
 
-            half_w = _half_width(props)
+            half_w = half_width_for_props(props)
             road_id = props.get('osmid', f"{feature_idx}")
             base_name = f"road_{_sanitize(road_id)}_{feature_idx}"
 
