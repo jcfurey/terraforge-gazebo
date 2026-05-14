@@ -44,8 +44,8 @@ def _polygon_to_body_sdf(polygon, name_prefix, pose_xyz, thickness, color=ROAD_C
     link per road segment slashes entity count at load.
 
     Roads don't emit a `<collision>` — the rover drives on the flat
-    ground plane (the heightmap has no collision in bullet-featherstone)
-    and the road surface is purely visual.
+    ground plane (no gz-sim physics backend implements heightmap
+    collision) and the road surface is purely visual.
     """
     if polygon.geom_type != 'Polygon' or not polygon.is_valid or not polygon.is_simple:
         return None

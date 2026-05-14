@@ -137,11 +137,13 @@ def build_scene_tiles(buildings, trees, roads, half_extent_m,
         total_body_items += len(body_items)
         total_own_links += len(own_link_items)
 
-        # bullet-featherstone requires every link in a model to be
-        # connected into a single kinematic tree via joints (a model
-        # with multiple floating links fails validation with "Multiple
-        # sub-trees / floating links detected" and the engine silently
-        # drops all but one link). A single-link model is trivially
+        # The single-kinematic-tree-per-model rule is a leftover
+        # constraint from when this template loaded bullet-featherstone
+        # ("Multiple sub-trees / floating links detected" validation
+        # failure with all-but-one link silently dropped). Plain bullet
+        # accepts disconnected links, so this packing is no longer
+        # strictly required — but it costs nothing and keeps a clean
+        # one-link-per-model layout that's easy to inspect. A single-link model is trivially
         # valid, so body_items all go into one shared link with no
         # joint. own_link_items each need a fixed joint to the shared
         # link. Note: SDFormat reserves names with leading/trailing

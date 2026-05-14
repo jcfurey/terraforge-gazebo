@@ -91,8 +91,10 @@ def test_tree_only_tile_emits_placeholder_bodies_link():
     records = build_scene_tiles(buildings=None, trees=trees, roads=None,
                                 half_extent_m=500.0, tile_size_m=200.0)
     sdf = records[0]['model_sdf']
-    # Bodies link is emitted even empty so the tree can joint onto it
-    # and bullet-featherstone validation passes.
+    # Bodies link is emitted even empty so the tree can joint onto it.
+    # Originally added for bullet-featherstone's strict single-tree
+    # validation; retained under plain bullet because it keeps the
+    # tile-link layout consistent.
     assert "_bodies'></link>" in sdf or "_bodies'>\n" in sdf
     assert sdf.count("type='fixed'") == 1
 
