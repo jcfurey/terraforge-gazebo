@@ -56,6 +56,83 @@ def _choose_heightmap_size(src_dem_path: str, max_size: int) -> int:
     return chosen
 
 
+def _setup_fuel_wrappers(output_dir):
+    """Write Gazebo Fuel wrapper models for ``--foliage-style fuel``.
+
+    Fuel mode emits ``<include><uri>model://tree_fuel_<i></uri></include>``.
+    Auto-generate minimal wrappers into ``<output>/models_fuel/`` so the
+    world is self-contained. ``spawn_world.launch.py`` adds that dir to
+    ``GZ_SIM_RESOURCE_PATH``; if the operator has a richer wrapper pack
+    earlier on the path (e.g. mesh-backed fuel trees in a bringup
+    workspace), it takes precedence because ``write_fuel_wrappers`` only
+    writes files that don't already exist.
+    """
+    models_fuel_dir = os.path.join(os.path.abspath(output_dir), 'models_fuel')
+    written = tree_processor.write_fuel_wrappers(models_fuel_dir)
+    if written:
+        logger.info(
+            f"--foliage-style fuel: wrote {len(written)} wrapper model(s) "
+            f"to {models_fuel_dir} ({', '.join(written)}). Launch will "
+            f"add this dir to GZ_SIM_RESOURCE_PATH."
+        )
+    missing = tree_processor.missing_fuel_wrappers(extra_roots=[models_fuel_dir])
+    if missing:
+        logger.warning(
+            f"--foliage-style fuel: still missing {missing} even after "
+            f"writing defaults; check filesystem permissions on "
+            f"{models_fuel_dir}."
+        )
+
+
+def _resolve_texture_paths(output_textures_dir, texture_file,
+                           texture_cache_dir, texture_format):
+    """Resolve the lossless texture *source* and render-only *output* paths.
+
+    Returns ``(texture_source_path, texture_output_path, texture_ext)``.
+
+    TWO distinct texture paths are deliberately kept separate:
+
+      texture_source_path (always PNG / user's raw orthophoto)
+        The LOSSLESS image every mask + analysis step reads — cloud_mask,
+        foliage_mask, tree_processor's legacy EXG vegetation scatter. JPEG
+        compression blurs low-contrast EXG thresholds (2*G - R - B) and
+        biases cloud-mask HLS saturation, so these stages MUST NOT read the
+        compressed render texture. If the user supplied --texture-file we
+        take their file as-is (they chose its quality); otherwise we produce
+        a PNG cache of the downloaded mosaic.
+
+      texture_output_path (JPEG by default, PNG optional)
+        The RENDER-ONLY asset baked into the world SDF as the heightmap
+        <diffuse>. Gazebo decodes this once at world load and uploads to the
+        GPU; JPEG is ~5x smaller + faster on smooth satellite imagery.
+        Nothing in the mask pipeline touches this file.
+
+    The two paths must never alias: if a future change accidentally routes
+    the render output back into the mask source (or vice-versa), raise now
+    rather than silently letting JPEG artefacts bias EXG / HLS thresholds.
+    """
+    if texture_file is not None:
+        texture_source_path = os.path.abspath(texture_file)
+    else:
+        texture_source_path = os.path.join(texture_cache_dir, 'satellite_texture.png')
+
+    texfmt = (texture_format or 'jpeg').lower()
+    if texfmt not in ('png', 'jpeg', 'jpg'):
+        raise ValueError(f"Unsupported texture_format={texture_format!r}; "
+                         f"expected 'png' or 'jpeg'.")
+    texture_ext = 'png' if texfmt == 'png' else 'jpg'
+    texture_output_path = os.path.join(
+        output_textures_dir, f'satellite_texture.{texture_ext}'
+    )
+    if os.path.abspath(texture_source_path) == os.path.abspath(texture_output_path):
+        raise AssertionError(
+            f"texture_source_path and texture_output_path alias the same "
+            f"file ({texture_source_path}); masks must read the lossless "
+            f"source, not the render-only output."
+        )
+    return texture_source_path, texture_output_path, texture_ext
+
+
 def run_generate_world(
     latitude,
     longitude,
@@ -120,29 +197,11 @@ def run_generate_world(
             "WorldCover integration; use 'rgb-osm' or 'off'."
         )
 
-    # Fuel mode emits <include><uri>model://tree_fuel_<i></uri></include>.
-    # Auto-generate minimal wrappers into <output>/models_fuel/ so the
-    # world is self-contained. spawn_world.launch.py adds that dir to
-    # GZ_SIM_RESOURCE_PATH; if the operator has a richer wrapper pack
-    # earlier on the path (e.g. mesh-backed fuel trees in a bringup
-    # workspace), it takes precedence because write_fuel_wrappers only
-    # writes files that don't already exist.
+    # Fuel mode needs self-contained model://tree_fuel_<i> wrappers written
+    # into <output>/models_fuel/ before any trees are emitted. See
+    # _setup_fuel_wrappers for the GZ_SIM_RESOURCE_PATH / precedence details.
     if foliage_style == 'fuel':
-        models_fuel_dir = os.path.join(os.path.abspath(output_dir), 'models_fuel')
-        written = tree_processor.write_fuel_wrappers(models_fuel_dir)
-        if written:
-            logger.info(
-                f"--foliage-style fuel: wrote {len(written)} wrapper model(s) "
-                f"to {models_fuel_dir} ({', '.join(written)}). Launch will "
-                f"add this dir to GZ_SIM_RESOURCE_PATH."
-            )
-        missing = tree_processor.missing_fuel_wrappers(extra_roots=[models_fuel_dir])
-        if missing:
-            logger.warning(
-                f"--foliage-style fuel: still missing {missing} even after "
-                f"writing defaults; check filesystem permissions on "
-                f"{models_fuel_dir}."
-            )
+        _setup_fuel_wrappers(output_dir)
 
     origin_location = (latitude, longitude)
     # Cache key includes radius — the WGS84 bbox depends on it, and a cache
@@ -253,48 +312,12 @@ def run_generate_world(
 
     heightmap_output_path = os.path.join(output_media_dir, 'heightmap.png')
 
-    # TWO distinct texture paths, deliberately kept separate:
-    #
-    #   texture_source_path (always PNG / user's raw orthophoto)
-    #     The LOSSLESS image every mask + analysis step reads —
-    #     cloud_mask, foliage_mask, tree_processor's legacy EXG
-    #     vegetation scatter. JPEG compression blurs low-contrast
-    #     EXG thresholds (2*G - R - B) and biases cloud-mask HLS
-    #     saturation, so these stages MUST NOT read the compressed
-    #     render texture. If the user supplied --texture-file, we take
-    #     their file as-is (they chose its quality); otherwise we
-    #     produce a PNG cache of the downloaded mosaic.
-    #
-    #   texture_output_path (JPEG by default, PNG optional)
-    #     The RENDER-ONLY asset baked into the world SDF as the
-    #     heightmap <diffuse>. Gazebo decodes this once at world load
-    #     and uploads to the GPU; JPEG is ~5x smaller + faster on
-    #     smooth satellite imagery. Nothing in the mask pipeline
-    #     touches this file.
-    #
-    if texture_file is not None:
-        texture_source_path = os.path.abspath(texture_file)
-    else:
-        texture_source_path = os.path.join(texture_cache_dir, 'satellite_texture.png')
-
-    _texfmt = (texture_format or 'jpeg').lower()
-    if _texfmt not in ('png', 'jpeg', 'jpg'):
-        raise ValueError(f"Unsupported texture_format={texture_format!r}; "
-                         f"expected 'png' or 'jpeg'.")
-    _texext = 'png' if _texfmt == 'png' else 'jpg'
-    texture_output_path = os.path.join(
-        output_textures_dir, f'satellite_texture.{_texext}'
+    # Resolve the lossless mask source vs the render-only output texture.
+    # See _resolve_texture_paths for why these are kept strictly separate
+    # and the alias safety rail.
+    texture_source_path, texture_output_path, _texext = _resolve_texture_paths(
+        output_textures_dir, texture_file, texture_cache_dir, texture_format,
     )
-    # Safety rail: the two paths must never alias. If a future change
-    # accidentally routes the render output back into the mask source
-    # (or vice-versa), blow up now rather than silently letting JPEG
-    # artefacts bias EXG / HLS thresholds.
-    if os.path.abspath(texture_source_path) == os.path.abspath(texture_output_path):
-        raise AssertionError(
-            f"texture_source_path and texture_output_path alias the same "
-            f"file ({texture_source_path}); masks must read the lossless "
-            f"source, not the render-only output."
-        )
 
     _check_cancel()
     _log("Processing DEM into heightmap...")

@@ -11,7 +11,7 @@ from PIL import Image
 
 from terraforge.utils.config import config
 from terraforge.utils.logging import logger
-from terraforge.utils.retry import retry_call, scrub_key
+from terraforge.utils.retry import retry_call
 from terraforge.data_acquisition.elevation import _calculate_bounds_wgs84
 
 USER_AGENT = "terraforge_gazebo/0.1 (+https://github.com/r3tr056/terraforge-gazebo)"
@@ -476,8 +476,11 @@ def download_satellite_texture_tiles(
             try:
                 return (x_tile, y_tile, Image.open(tile_output_path).convert("RGB"),
                         'cache', None)
-            except Exception as e:
-                # Corrupt cache file — re-fetch below.
+            except (OSError, Image.UnidentifiedImageError) as e:
+                # Truncated/corrupt cache file (partial write, bad bytes) —
+                # re-fetch below. Narrowed from a bare ``Exception`` so a
+                # genuinely unexpected error surfaces instead of being
+                # masked as a routine cache miss.
                 logger.warning(
                     f"tile {x_tile}_{y_tile}: corrupt cache ({e}); re-fetching"
                 )
@@ -488,6 +491,10 @@ def download_satellite_texture_tiles(
             r.raise_for_status()
             return r.content
 
+        # Broad ``except`` is intentional in this worker: it runs inside the
+        # ThreadPoolExecutor and must convert ANY failure into a 'failed'
+        # result so one bad tile can't kill the pool. The error object is
+        # propagated back and logged by the collecting loop.
         try:
             content = retry_call(
                 _do,
