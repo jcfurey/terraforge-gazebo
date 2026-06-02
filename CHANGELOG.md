@@ -60,3 +60,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   DEM sizing/reprojection so the guard is what surfaces, and a sub-pixel
   satellite-crop edge now clamps to >= 1px (was raising
   `ValueError: cannot write empty image` at very coarse zoom).
+- Fixed a real cancellation bug: `run_generate_world` now polls `cancel_flag`
+  immediately after identifier validation, before the first DEM download, so a
+  cancel issued before any network I/O is honoured (was previously ignored
+  until after the DEM fetch). Restores `test_cancel_before_dem_download`.
+
+### CI / lint configuration
+- Disabled the `ament_copyright` test: it only recognises a license when the
+  full license body is inlined in every file, reporting the project's short
+  `# Licensed under the MIT License.` header as `license=<unknown>`. Licensing
+  is governed by the `LICENSE` file plus the per-file short header.
+- Disabled the `ament_pep257` test: it enforces D213 (summary on the second
+  line) and numpy-style sections, which conflict with the project's PEP-257 /
+  D212 house style, and it scans the `experimental/` WIP tree. Substantive
+  style remains enforced by the (passing) `ament_flake8` gate.

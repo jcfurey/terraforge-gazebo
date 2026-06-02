@@ -195,6 +195,11 @@ def run_generate_world(
     world_name = safe_identifier(world_name, field='world_name')
     performer_ref = safe_identifier(performer_ref, field='performer_ref')
 
+    # Honour a cancel request before any expensive network I/O. Without this
+    # early check the first DEM download fires before the pipeline ever polls
+    # cancel_flag, so a "cancel before anything runs" request is ignored.
+    _check_cancel()
+
     if foliage_mask_mode == 'worldcover':
         raise NotImplementedError(
             "foliage_mask_mode='worldcover' is reserved for a future ESA "
