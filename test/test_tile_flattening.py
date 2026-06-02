@@ -29,9 +29,9 @@ def _building_placement(name, xy, z=0.0):
         # so we can assert the packed link contains all of them.
         'body_sdf': (
             f"      <visual name='vis_{name}'>\n"
-            f"        <pose>{x:.3f} {y:.3f} {z:.3f} 0 0 0</pose>\n"
-            f"        <geometry><box><size>1 1 1</size></box></geometry>\n"
-            f"      </visual>"
+            f'        <pose>{x:.3f} {y:.3f} {z:.3f} 0 0 0</pose>\n'
+            f'        <geometry><box><size>1 1 1</size></box></geometry>\n'
+            f'      </visual>'
         ),
     }
 
@@ -47,12 +47,12 @@ def _tree_placement(name, xy):
         # they contribute a full <link> rather than a body fragment.
         'link_sdf': (
             f"    <link name='{name}'>\n"
-            f"      <pose>{x:.3f} {y:.3f} 0 0 0 1.234</pose>\n"
+            f'      <pose>{x:.3f} {y:.3f} 0 0 0 1.234</pose>\n'
             f"      <visual name='trunk'>\n"
-            f"        <geometry><cylinder>"
-            f"<radius>0.2</radius><length>3</length></cylinder></geometry>\n"
-            f"      </visual>\n"
-            f"    </link>"
+            f'        <geometry><cylinder>'
+            f'<radius>0.2</radius><length>3</length></cylinder></geometry>\n'
+            f'      </visual>\n'
+            f'    </link>'
         ),
     }
 

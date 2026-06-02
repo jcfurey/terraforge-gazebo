@@ -163,8 +163,8 @@ def build_scene_tiles(buildings, trees, roads, half_extent_m,
             body_sdf = '\n'.join(i['body_sdf'] for i in body_items)
             model_parts.append(
                 f"    <link name='{bodies_link_name}'>\n"
-                f"{body_sdf}\n"
-                f"    </link>"
+                f'{body_sdf}\n'
+                f'    </link>'
             )
         elif own_link_items:
             # No body items but we still need a root for cartoon trees
@@ -177,9 +177,9 @@ def build_scene_tiles(buildings, trees, roads, half_extent_m,
             )
             model_parts.append('\n'.join(
                 f"    <joint name='j_{i['link_name']}' type='fixed'>\n"
-                f"      <parent>{bodies_link_name}</parent>\n"
+                f'      <parent>{bodies_link_name}</parent>\n'
                 f"      <child>{i['link_name']}</child>\n"
-                f"    </joint>"
+                f'    </joint>'
                 for i in own_link_items
             ))
 
@@ -188,8 +188,8 @@ def build_scene_tiles(buildings, trees, roads, half_extent_m,
             # terrain prop; no physics.
             model_sdf = (
                 f"  <model name='{tile_id}'>\n"
-                f"    <static>true</static>\n"
-                f"    <pose>0 0 0 0 0 0</pose>\n"
+                f'    <static>true</static>\n'
+                f'    <pose>0 0 0 0 0 0</pose>\n'
                 + '\n'.join(model_parts)
                 + '\n  </model>'
             )
@@ -307,10 +307,10 @@ class SDFWorldBuilder:
         if enable_level_streaming and scene_tiles:
             logger.info(
                 f"Native level streaming enabled: performer '{performer_ref}', "
-                f"active radius {level_active_radius_m:.0f} m "
-                f"(buffer {level_buffer_m:.0f} m around "
-                f"{tile_size_m:.0f} m tiles), {len(scene_tiles)} tile(s). "
-                f"Launch with `gz sim --levels`."
+                f'active radius {level_active_radius_m:.0f} m '
+                f'(buffer {level_buffer_m:.0f} m around '
+                f'{tile_size_m:.0f} m tiles), {len(scene_tiles)} tile(s). '
+                f'Launch with `gz sim --levels`.'
             )
         template = self.template_env.get_template('world_template.sdf.j2')
         rendered_sdf = template.render(

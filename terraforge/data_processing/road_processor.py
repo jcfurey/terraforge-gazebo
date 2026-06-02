@@ -63,19 +63,19 @@ def _polygon_to_body_sdf(polygon, name_prefix, pose_xyz, thickness, color=ROAD_C
     px, py, pz = pose_xyz
     return (
         f"      <visual name='vis_{name_prefix}'>\n"
-        f"        <pose>{px:.3f} {py:.3f} {pz:.3f} 0 0 0</pose>\n"
-        f"        <geometry>\n"
-        f"          <polyline>\n"
-        f"            {pts}\n"
-        f"            <height>{thickness:.3f}</height>\n"
-        f"          </polyline>\n"
-        f"        </geometry>\n"
-        f"        <material>\n"
-        f"          <ambient>{r} {g} {b} 1</ambient>\n"
-        f"          <diffuse>{r} {g} {b} 1</diffuse>\n"
-        f"          <specular>0.05 0.05 0.05 1</specular>\n"
-        f"        </material>\n"
-        f"      </visual>"
+        f'        <pose>{px:.3f} {py:.3f} {pz:.3f} 0 0 0</pose>\n'
+        f'        <geometry>\n'
+        f'          <polyline>\n'
+        f'            {pts}\n'
+        f'            <height>{thickness:.3f}</height>\n'
+        f'          </polyline>\n'
+        f'        </geometry>\n'
+        f'        <material>\n'
+        f'          <ambient>{r} {g} {b} 1</ambient>\n'
+        f'          <diffuse>{r} {g} {b} 1</diffuse>\n'
+        f'          <specular>0.05 0.05 0.05 1</specular>\n'
+        f'        </material>\n'
+        f'      </visual>'
     )
 
 

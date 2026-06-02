@@ -74,9 +74,9 @@ def _setup_fuel_wrappers(output_dir):
     written = tree_processor.write_fuel_wrappers(models_fuel_dir)
     if written:
         logger.info(
-            f"--foliage-style fuel: wrote {len(written)} wrapper model(s) "
+            f'--foliage-style fuel: wrote {len(written)} wrapper model(s) '
             f"to {models_fuel_dir} ({', '.join(written)}). Launch will "
-            f"add this dir to GZ_SIM_RESOURCE_PATH."
+            f'add this dir to GZ_SIM_RESOURCE_PATH.'
         )
     missing = tree_processor.missing_fuel_wrappers(extra_roots=[models_fuel_dir])
     if missing:
@@ -121,7 +121,7 @@ def _resolve_texture_paths(output_textures_dir, texture_file,
 
     texfmt = (texture_format or 'jpeg').lower()
     if texfmt not in ('png', 'jpeg', 'jpg'):
-        raise ValueError(f"Unsupported texture_format={texture_format!r}; "
+        raise ValueError(f'Unsupported texture_format={texture_format!r}; '
                          f"expected 'png' or 'jpeg'.")
     texture_ext = 'png' if texfmt == 'png' else 'jpg'
     texture_output_path = os.path.join(
@@ -335,7 +335,7 @@ def run_generate_world(
     if height_amplitude is None or height_amplitude <= 0:
         height_amplitude = dem_range
         _log(
-            f"Auto height_amplitude = {height_amplitude:.2f} m "
+            f'Auto height_amplitude = {height_amplitude:.2f} m '
             f"(DEM relief: {dem_stats['min']:.1f}-{dem_stats['max']:.1f})"
         )
 
@@ -713,8 +713,8 @@ def generate_world(ctx, latitude, longitude, side_length, radius, output_dir,
     # pipeline only to raise from inside run_generate_world.
     if foliage_mask_mode.lower() == 'worldcover':
         raise click.UsageError(
-            "--foliage-mask worldcover is reserved for a future ESA WorldCover "
-            "10 m tree-cover integration and is not yet implemented. Use "
+            '--foliage-mask worldcover is reserved for a future ESA WorldCover '
+            '10 m tree-cover integration and is not yet implemented. Use '
             "'rgb-osm' (default) or 'off'."
         )
 

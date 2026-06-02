@@ -28,7 +28,7 @@ def _write_geojson(path, features):
 
 
 def _square(lat, lon, side_deg, height_tag=None, osmid='id'):
-    """GeoJSON Polygon feature centered on (lat, lon) with given side length."""
+    """Build a GeoJSON Polygon feature centered on (lat, lon) with given side length."""
     half = side_deg / 2.0
     coords = [[
         [lon - half, lat - half],

@@ -28,8 +28,10 @@ from terraforge import cli  # noqa: E402
 
 
 class _AbortAfterMasks(Exception):
-    """Sentinel raised once masks have been built so the test
-    short-circuits before heavy DEM + OSM processing."""
+    """Sentinel raised once masks have been built.
+
+    Lets the test short-circuit before heavy DEM + OSM processing.
+    """
 
 
 def test_masks_never_read_jpeg_output(tmp_path, monkeypatch):
@@ -144,9 +146,12 @@ def test_masks_never_read_jpeg_output(tmp_path, monkeypatch):
 
 
 def test_source_and_output_paths_must_not_alias(tmp_path, monkeypatch):
-    """If a future refactor lets the mask source path resolve to the
-    same file as the JPEG output, run_generate_world must blow up
-    rather than silently degrade mask quality."""
+    """Reject a mask source that aliases the JPEG output path.
+
+    If a future refactor lets the mask source path resolve to the same file
+    as the JPEG output, run_generate_world must blow up rather than silently
+    degrade mask quality.
+    """
     # Forge a --texture-file that points exactly at the output JPEG.
     fake = tmp_path / 'out' / 'media_name' / 'materials' / 'textures' / 'satellite_texture.jpg'
     fake.parent.mkdir(parents=True)

@@ -165,10 +165,10 @@ def _broadleaf_canopy(base_z: float, cr: float, rng) -> str:
     for i, (dx, dy, dz, scale) in enumerate(offsets):
         parts.append(
             f"      <visual name='canopy_{i}'>\n"
-            f"        <pose>{dx:.3f} {dy:.3f} {base_z + dz:.3f} 0 0 0</pose>\n"
-            f"        <geometry><sphere><radius>{cr * scale:.3f}</radius></sphere></geometry>\n"
-            f"        {mat}\n"
-            f"      </visual>"
+            f'        <pose>{dx:.3f} {dy:.3f} {base_z + dz:.3f} 0 0 0</pose>\n'
+            f'        <geometry><sphere><radius>{cr * scale:.3f}</radius></sphere></geometry>\n'
+            f'        {mat}\n'
+            f'      </visual>'
         )
     return '\n'.join(parts)
 
@@ -197,11 +197,11 @@ def _conifer_canopy(base_z: float, ch_half: float, cr: float, rng) -> str:
         cz = base_z - ch_half + z_off + seg_h / 2.0
         parts.append(
             f"      <visual name='canopy_{i}'>\n"
-            f"        <pose>0 0 {cz:.3f} 0 0 0</pose>\n"
-            f"        <geometry><cylinder><radius>{seg_r:.3f}</radius>"
-            f"<length>{seg_h:.3f}</length></cylinder></geometry>\n"
-            f"        {mat}\n"
-            f"      </visual>"
+            f'        <pose>0 0 {cz:.3f} 0 0 0</pose>\n'
+            f'        <geometry><cylinder><radius>{seg_r:.3f}</radius>'
+            f'<length>{seg_h:.3f}</length></cylinder></geometry>\n'
+            f'        {mat}\n'
+            f'      </visual>'
         )
     return '\n'.join(parts)
 
@@ -220,18 +220,18 @@ def _shrub_canopy(base_z: float, cr: float, rng) -> str:
     mound_h = cr * 0.9
     parts = [
         f"      <visual name='canopy_mound'>\n"
-        f"        <pose>0 0 {base_z:.3f} 0 0 0</pose>\n"
-        f"        <geometry><cylinder><radius>{cr:.3f}</radius>"
-        f"<length>{mound_h:.3f}</length></cylinder></geometry>\n"
-        f"        {mat}\n"
-        f"      </visual>",
+        f'        <pose>0 0 {base_z:.3f} 0 0 0</pose>\n'
+        f'        <geometry><cylinder><radius>{cr:.3f}</radius>'
+        f'<length>{mound_h:.3f}</length></cylinder></geometry>\n'
+        f'        {mat}\n'
+        f'      </visual>',
         f"      <visual name='canopy_cap'>\n"
-        f"        <pose>{cr*0.2*rng.choice((-1,1)):.3f} "
-        f"{cr*0.2*rng.choice((-1,1)):.3f} "
-        f"{base_z + mound_h * 0.4:.3f} 0 0 0</pose>\n"
-        f"        <geometry><sphere><radius>{cr*0.55:.3f}</radius></sphere></geometry>\n"
-        f"        {mat}\n"
-        f"      </visual>",
+        f'        <pose>{cr*0.2*rng.choice((-1, 1)):.3f} '
+        f'{cr*0.2*rng.choice((-1, 1)):.3f} '
+        f'{base_z + mound_h * 0.4:.3f} 0 0 0</pose>\n'
+        f'        <geometry><sphere><radius>{cr*0.55:.3f}</radius></sphere></geometry>\n'
+        f'        {mat}\n'
+        f'      </visual>',
     ]
     return '\n'.join(parts)
 

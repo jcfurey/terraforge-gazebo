@@ -168,25 +168,25 @@ def _polygon_to_polyline_body_sdf(polygon, name_prefix: str, pose_xyz: tuple,
     # the pose via <visual><pose>.
     return (
         f"      <collision name='col_{name_prefix}'>\n"
-        f"        <pose>{px + box_cx:.3f} {py + box_cy:.3f} "
-        f"{pz + height / 2.0:.3f} 0 0 0</pose>\n"
-        f"        <geometry><box><size>{box_x:.3f} {box_y:.3f} "
-        f"{height:.3f}</size></box></geometry>\n"
-        f"      </collision>\n"
+        f'        <pose>{px + box_cx:.3f} {py + box_cy:.3f} '
+        f'{pz + height / 2.0:.3f} 0 0 0</pose>\n'
+        f'        <geometry><box><size>{box_x:.3f} {box_y:.3f} '
+        f'{height:.3f}</size></box></geometry>\n'
+        f'      </collision>\n'
         f"      <visual name='vis_{name_prefix}'>\n"
-        f"        <pose>{px:.3f} {py:.3f} {pz:.3f} 0 0 0</pose>\n"
-        f"        <geometry>\n"
-        f"          <polyline>\n"
-        f"            {pts}\n"
-        f"            <height>{height:.3f}</height>\n"
-        f"          </polyline>\n"
-        f"        </geometry>\n"
-        f"        <material>\n"
-        f"          <ambient>{r} {g} {b} 1</ambient>\n"
-        f"          <diffuse>{r} {g} {b} 1</diffuse>\n"
-        f"          <specular>0.1 0.1 0.1 1</specular>\n"
-        f"        </material>\n"
-        f"      </visual>"
+        f'        <pose>{px:.3f} {py:.3f} {pz:.3f} 0 0 0</pose>\n'
+        f'        <geometry>\n'
+        f'          <polyline>\n'
+        f'            {pts}\n'
+        f'            <height>{height:.3f}</height>\n'
+        f'          </polyline>\n'
+        f'        </geometry>\n'
+        f'        <material>\n'
+        f'          <ambient>{r} {g} {b} 1</ambient>\n'
+        f'          <diffuse>{r} {g} {b} 1</diffuse>\n'
+        f'          <specular>0.1 0.1 0.1 1</specular>\n'
+        f'        </material>\n'
+        f'      </visual>'
     )
 
 
@@ -214,20 +214,20 @@ def _polygon_to_box_body_sdf(polygon, name_prefix: str, pose_xyz: tuple,
     cz = pz + height / 2.0
     return (
         f"      <collision name='col_{name_prefix}'>\n"
-        f"        <pose>{cx_world:.3f} {cy_world:.3f} {cz:.3f} 0 0 0</pose>\n"
-        f"        <geometry><box><size>{size_x:.3f} {size_y:.3f} "
-        f"{height:.3f}</size></box></geometry>\n"
-        f"      </collision>\n"
+        f'        <pose>{cx_world:.3f} {cy_world:.3f} {cz:.3f} 0 0 0</pose>\n'
+        f'        <geometry><box><size>{size_x:.3f} {size_y:.3f} '
+        f'{height:.3f}</size></box></geometry>\n'
+        f'      </collision>\n'
         f"      <visual name='vis_{name_prefix}'>\n"
-        f"        <pose>{cx_world:.3f} {cy_world:.3f} {cz:.3f} 0 0 0</pose>\n"
-        f"        <geometry><box><size>{size_x:.3f} {size_y:.3f} "
-        f"{height:.3f}</size></box></geometry>\n"
-        f"        <material>\n"
-        f"          <ambient>{r} {g} {b} 1</ambient>\n"
-        f"          <diffuse>{r} {g} {b} 1</diffuse>\n"
-        f"          <specular>0.1 0.1 0.1 1</specular>\n"
-        f"        </material>\n"
-        f"      </visual>"
+        f'        <pose>{cx_world:.3f} {cy_world:.3f} {cz:.3f} 0 0 0</pose>\n'
+        f'        <geometry><box><size>{size_x:.3f} {size_y:.3f} '
+        f'{height:.3f}</size></box></geometry>\n'
+        f'        <material>\n'
+        f'          <ambient>{r} {g} {b} 1</ambient>\n'
+        f'          <diffuse>{r} {g} {b} 1</diffuse>\n'
+        f'          <specular>0.1 0.1 0.1 1</specular>\n'
+        f'        </material>\n'
+        f'      </visual>'
     )
 
 

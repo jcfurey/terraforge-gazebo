@@ -20,11 +20,11 @@ class CoordinateConverter:
 
         self.origin_utm_x, self.origin_utm_y = self.wgs84_to_utm_transformer.transform(lon, lat)
         logger.info(
-            f"Coordinate Converter initialized with origin WGS84: "
-            f"{origin_location_wgs84}, UTM Zone: {self.utm_zone}"
+            f'Coordinate Converter initialized with origin WGS84: '
+            f'{origin_location_wgs84}, UTM Zone: {self.utm_zone}'
             f"{'N' if self.northern_hemisphere else 'S'}, "
-            f"UTM CRS: {self.utm_crs_string}, "
-            f"Origin UTM: ({self.origin_utm_x}, {self.origin_utm_y})")
+            f'UTM CRS: {self.utm_crs_string}, '
+            f'Origin UTM: ({self.origin_utm_x}, {self.origin_utm_y})')
 
     @property
     def utm_crs_string(self):

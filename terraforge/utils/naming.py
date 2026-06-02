@@ -29,8 +29,8 @@ def safe_identifier(value: str, *, field: str) -> str:
         raise ValueError(f'{field} must be a non-empty string')
     if not _SAFE_IDENT.match(value):
         raise ValueError(
-            f"{field}={value!r} contains disallowed characters. "
+            f'{field}={value!r} contains disallowed characters. '
             f"Allowed: letters, digits, '_', '.', '-'; must start AND end "
-            f"with a letter/digit/underscore."
+            f'with a letter/digit/underscore.'
         )
     return value
