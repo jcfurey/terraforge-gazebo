@@ -1,3 +1,6 @@
+# Copyright 2024 TerraForge Contributors
+#
+# Licensed under the MIT License.
 from setuptools import find_packages, setup
 
 package_name = 'terraforge_gazebo'

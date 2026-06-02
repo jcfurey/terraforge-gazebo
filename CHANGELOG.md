@@ -29,7 +29,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   for readability and testability.
 
 ### Fixed
+- **CI: install `python3-pip` before the pip step.** The `ros:jazzy-ros-base`
+  image ships without pip, so the workflow had been failing for everyone
+  (including `master`) with `No module named pip` before build/lint/tests ever
+  ran.
 - Narrowed the corrupt-tile-cache `except Exception` in
   `terraforge/data_acquisition/textures.py` to
   `(OSError, Image.UnidentifiedImageError)` so unexpected errors surface
   instead of being silently treated as a cache miss.
+
+### Lint debt (surfaced once CI got past the pip failure)
+- Added the MIT copyright header to all `terraforge/` source files, `setup.py`,
+  and the launch file (required by `ament_copyright`).
+- Added `experimental/AMENT_IGNORE` so the ament linters skip the WIP map
+  widget (it is already excluded from the installed package).
+- Fixed the 28 `ament_flake8` violations in package code (long lines, an unused
+  import, continuation-indent, blank-line, lambda-assignment, and
+  trailing-whitespace / missing-newline issues).

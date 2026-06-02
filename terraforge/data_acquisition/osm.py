@@ -1,3 +1,6 @@
+# Copyright 2024 TerraForge Contributors
+#
+# Licensed under the MIT License.
 import osmnx as ox
 
 from terraforge.data_acquisition.elevation import _calculate_bounds_wgs84

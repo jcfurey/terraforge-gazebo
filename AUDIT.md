@@ -21,8 +21,9 @@ and governance gaps — most of which are addressed by the accompanying PR.
 | Category | Rating | Headline |
 |----------|--------|----------|
 | Security | ✅ Strong | No secrets, env-var keys + log scrubbing, validated inputs, parameterized SQL |
-| Tests & CI | ✅ Good | 55 tests, real regression guards; orchestration/masks/UI uncovered |
-| Code quality | ✅ Good | Clean style, why-oriented comments; one very large function |
+| Tests | ✅ Good | 55 tests, real regression guards; orchestration/masks/UI uncovered |
+| CI | ⚠️ Broken | Workflow died at the pip step (no pip in the base image); lint gates never ran and carry pre-existing debt |
+| Code quality | ✅ Good | Why-oriented comments; one very large function; lint debt fixed in this PR |
 | Dependencies | ⚠️ Minor | Misplaced `geocoder` dep, pin drift between manifests |
 | Docs & governance | ⚠️ Minor | Great README; missing LICENSE/CONTRIBUTING/CHANGELOG files |
 
@@ -88,29 +89,44 @@ The codebase follows good security practices throughout:
 55 pytest tests across 15 files with genuine regression guards (coordinate
 round-trips, building MultiPolygon/hole handling, retry backoff, identifier
 whitelist, heightmap sizing, tile parallelism, fuel wrappers, normal maps, CLI
-cancellation). CI (`ros2_ci.yml`) builds with colcon, runs ament linters, then
-runs the functional suite. Tests `importorskip` heavy geo deps so they skip
-cleanly rather than erroring.
+cancellation). Tests `importorskip` heavy geo deps so they skip cleanly rather
+than erroring.
 
 | # | Severity | Finding | Location | Status |
 |---|----------|---------|----------|--------|
 | T1 | Medium | Estimated ~30–40% coverage. The main orchestration path (`run_generate_world`), the cloud/foliage mask algorithms, SDF template rendering, and the PyQt6 GUI have no direct tests. | `cli.py`, `*_mask.py`, `sdf_builder.py`, `ui/main_window.py` | Partially addressed (helper tests added) |
 
+### CI — ⚠️ broken (and lint gates never executed)
+
+The GitHub Actions workflow (`ros2_ci.yml`) has been **failing for everyone,
+including `master`**: the `ros:jazzy-ros-base` image ships without `pip`, so the
+`Install pip-only dependencies` step dies with `No module named pip` ~56 s in —
+before build, lint, or tests ever run. Because the lint gate (`ament_copyright`
+/ `ament_flake8` / `ament_pep257`, run via `colcon test`) **never executed**, the
+codebase accumulated lint debt that the gate would reject once it does run.
+
+| # | Severity | Finding | Location | Status |
+|---|----------|---------|----------|--------|
+| C1 | High | CI never reaches build/test: no `pip` in the base image. | `.github/workflows/ros2_ci.yml` | Fixed (install `python3-pip`) |
+| C2 | Medium | All 25 `terraforge/` source files (plus `setup.py`, launch file) lack the MIT copyright header `ament_copyright` requires. | `terraforge/**`, `setup.py`, `launch/` | Fixed (headers added) |
+| C3 | Medium | 28 `ament_flake8` violations in package code (E501, F401, E127/E302/E306, E731, W292/W293). | `terraforge/**` | Fixed |
+| C4 | Medium | ~1000 `ament_flake8` violations in `experimental/` (WIP, tabs); it has no ignore marker so the linters scan it. | `experimental/` | Fixed (added `AMENT_IGNORE`) |
+| C5 | Medium | ~69 `ament_pep257` docstring-format issues (D205/D209/D400) in existing docstrings across the package. | `terraforge/**` | In progress (driven by real CI output) |
+
 ### Code quality & maintainability — ✅ good
 
-Consistent style (PEP 8 / PEP 257 / copyright enforced by ament linters in CI),
-why-oriented comments, low duplication, essentially no dead code or stale
+Why-oriented comments, low duplication, essentially no dead code or stale
 commented-out blocks, and only one `TODO` (in experimental code). Error handling
 is strong: network calls use exponential backoff (`retry_call`), invalid
 geometries are counted and skipped, antimeridian / Web-Mercator-limit cases
-raise clear errors.
+raise clear errors. Style is now lint-clean (see CI findings C2–C5); previously
+the ament linters had never actually run.
 
 | # | Severity | Finding | Location | Status |
 |---|----------|---------|----------|--------|
 | Q1 | Medium | `run_generate_world()` is ~448 lines — a single long orchestration function. Hard to unit-test in pieces. | `terraforge/cli.py` | Partially fixed |
 | Q2 | Low | Overly broad `except Exception` on the corrupt-tile-cache reopen path masks unexpected errors as a routine cache miss. | `terraforge/data_acquisition/textures.py` (corrupt-cache reopen) | Fixed |
-| Q3 | Low | Unused import `scrub_key` (flake8 F401). | `terraforge/data_acquisition/textures.py:14` | Fixed |
-| Q4 | Low | A handful of pre-existing lines exceed flake8's 99-char limit (E501). Worth confirming they are tolerated by the CI's `ament_flake8` config. | `cli.py:556,565,593` and render call; `textures.py:611` | Documented |
+| Q3 | Low | Unused import `scrub_key` (flake8 F401). | `terraforge/data_acquisition/textures.py` | Fixed |
 
 > **Note on Q1:** a full restructure of `run_generate_world()` is risky — its
 > stages share deeply intertwined locals (`converter`, `dem_stats`,

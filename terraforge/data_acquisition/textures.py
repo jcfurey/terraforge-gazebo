@@ -1,3 +1,6 @@
+# Copyright 2024 TerraForge Contributors
+#
+# Licensed under the MIT License.
 import concurrent.futures
 import math
 import os
@@ -608,7 +611,8 @@ def download_satellite_texture_tiles(
         # input dimensions' geometric mean, so we neither over- nor under-
         # sample the web-mercator grid significantly.
         import math as _math
-        wm_staging_path = os.path.join(output_dir, f"satellite_texture_{provider}_z{zoom}_wm_staging.png")
+        wm_staging_path = os.path.join(
+            output_dir, f"satellite_texture_{provider}_z{zoom}_wm_staging.png")
         cropped.save(wm_staging_path)
         output_px = int(round(_math.sqrt(cropped.size[0] * cropped.size[1])))
         _reproject_webmercator_to_utm(

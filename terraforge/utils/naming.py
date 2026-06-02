@@ -1,3 +1,6 @@
+# Copyright 2024 TerraForge Contributors
+#
+# Licensed under the MIT License.
 """Identifier sanitation for values that flow into paths or SDF XML.
 
 `world_name` ends up in filesystem paths (per-world media subdir) and as

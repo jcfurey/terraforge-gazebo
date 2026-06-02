@@ -1,3 +1,6 @@
+# Copyright 2024 TerraForge Contributors
+#
+# Licensed under the MIT License.
 """Heuristic cloud detection on a satellite tile mosaic.
 
 Clouds in visible-light imagery have two reliable signatures:
@@ -66,6 +69,8 @@ DEFAULT_DILATION_PX = 3
 # caller supplies a finer meters_per_pixel, we downsample the image to this
 # target before morphology; if it's already coarser, we leave it alone.
 DEFAULT_TARGET_MPP = 5.0
+
+
 class CloudMask:
     def __init__(self, mask_array: np.ndarray, bbox_wgs84: tuple):
         """

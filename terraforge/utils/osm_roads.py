@@ -1,3 +1,6 @@
+# Copyright 2024 TerraForge Contributors
+#
+# Licensed under the MIT License.
 """OSM ``highway=*`` width tables and parser, shared between road_processor
 and foliage_mask.
 

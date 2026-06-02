@@ -1,3 +1,6 @@
+# Copyright 2024 TerraForge Contributors
+#
+# Licensed under the MIT License.
 import logging
 import os
 import shutil
@@ -503,7 +506,9 @@ def run_generate_world(
     sdf_content = builder.render_world_template(
         heightmap_path=heightmap_output_path if os.path.exists(heightmap_output_path) else None,
         texture_path=texture_output_path if os.path.exists(texture_output_path) else None,
-        flat_normal_path=flat_normal_output_path if os.path.exists(flat_normal_output_path) else None,
+        flat_normal_path=(
+            flat_normal_output_path
+            if os.path.exists(flat_normal_output_path) else None),
         buildings=buildings,
         trees=trees,
         roads=roads,
@@ -553,7 +558,8 @@ def cli(ctx, debug):
                    '--side-length for new usage.')
 @click.option('--output-dir', default='generated_world', type=click.Path(),
               help='Output directory for the generated world.')
-@click.option('--world-name', default='generated_world', help='Name of the generated Gazebo world.')
+@click.option('--world-name', default='generated_world',
+              help='Name of the generated Gazebo world.')
 @click.option('--height-amplitude', default=None, type=float,
               help='Vertical range (m) mapped to the full heightmap dynamic range. '
                    'Auto-detected from the DEM elevation range if unset.')
@@ -562,7 +568,8 @@ def cli(ctx, debug):
               default=None,
               help='Satellite tile source. Defaults to $SATELLITE_TEXTURE_SOURCE or "mapbox".')
 @click.option('--tile-api-key', default=None,
-              help='API key for the selected tile provider (overrides the provider-specific env var).')
+              help='API key for the selected tile provider '
+                   '(overrides the provider-specific env var).')
 @click.option('--zoom', 'tile_zoom', type=int, default=None,
               help='Force satellite tile zoom level (clamped to provider.max_zoom). '
                    'Without this, the pipeline picks the highest zoom that fits --max-tiles. '
@@ -590,7 +597,8 @@ def cli(ctx, debug):
                    'via --texture-file).')
 @click.option('--with-roads/--no-roads', default=False,
               help='Emit OSM highway ways as flat road strips. Off by default — '
-                   'current implementation is flat-per-segment and floats over undulating terrain.')
+                   'current implementation is flat-per-segment and floats '
+                   'over undulating terrain.')
 @click.option('--cloud-filter/--no-cloud-filter', default=True,
               help='Drop buildings/trees whose satellite pixel looks like cloud '
                    '(high luminance + low saturation). On by default.')

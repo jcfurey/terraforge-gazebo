@@ -1,3 +1,6 @@
+# Copyright 2024 TerraForge Contributors
+#
+# Licensed under the MIT License.
 """DEM download + WGS84 bbox math.
 
 Coordinate-system contract (must stay consistent across the pipeline):
@@ -27,7 +30,6 @@ Coordinate-system contract (must stay consistent across the pipeline):
 """
 
 import elevation
-import os
 from osgeo import gdal
 from pyproj import Transformer
 

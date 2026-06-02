@@ -1,6 +1,9 @@
+# Copyright 2024 TerraForge Contributors
+#
+# Licensed under the MIT License.
 
 from pyproj import Transformer
-import pyproj
+
 from terraforge.utils.logging import logger
 
 
@@ -10,11 +13,18 @@ class CoordinateConverter:
         lat, lon = origin_location_wgs84[0], origin_location_wgs84[1]
         self.utm_zone = self._determine_utm_zone(lon)
         self.northern_hemisphere = lat >= 0
-        self.wgs84_to_utm_transformer = Transformer.from_crs('EPSG:4326', self.utm_crs_string, always_xy=True)
-        self.utm_to_wgs84_transformer = Transformer.from_crs(self.utm_crs_string, "EPSG:4326", always_xy=True)
+        self.wgs84_to_utm_transformer = Transformer.from_crs(
+            'EPSG:4326', self.utm_crs_string, always_xy=True)
+        self.utm_to_wgs84_transformer = Transformer.from_crs(
+            self.utm_crs_string, "EPSG:4326", always_xy=True)
 
         self.origin_utm_x, self.origin_utm_y = self.wgs84_to_utm_transformer.transform(lon, lat)
-        logger.info(f"Coordinate Converter initialized with origin WGS84: {origin_location_wgs84}, UTM Zone: {self.utm_zone}{'N' if self.northern_hemisphere else 'S'}, UTM CRS: {self.utm_crs_string}, Origin UTM: ({self.origin_utm_x}, {self.origin_utm_y})")
+        logger.info(
+            f"Coordinate Converter initialized with origin WGS84: "
+            f"{origin_location_wgs84}, UTM Zone: {self.utm_zone}"
+            f"{'N' if self.northern_hemisphere else 'S'}, "
+            f"UTM CRS: {self.utm_crs_string}, "
+            f"Origin UTM: ({self.origin_utm_x}, {self.origin_utm_y})")
 
     @property
     def utm_crs_string(self):
@@ -31,16 +41,17 @@ class CoordinateConverter:
         if utm_zone > 60:
             utm_zone = 1
         return utm_zone
-    
+
     def wgs84_to_utm(self, location_wgs84: tuple) -> tuple:
-        """ Converts WGS84 (lat, lon) to UTM (x,y) coordinates in the initialized UTM Zone"""
+        """Convert WGS84 (lat, lon) to UTM (x, y) in the initialized UTM Zone."""
         lon, lat = location_wgs84[1], location_wgs84[0]
         utm_x, utm_y = self.wgs84_to_utm_transformer.transform(lon, lat)
         return utm_x, utm_y
-    
+
     def utm_to_local_gazebo(self, utm_coords: tuple) -> tuple:
         """
-        Converts UTM (x,y) coordinates to local Gazebo coordinates (x, y, z=0)
+        Convert UTM (x, y) coordinates to local Gazebo coordinates (x, y, z=0).
+
         The origin of the local Gazebo frame is the origin_location_wgs84 specified
         during initialization. Z-coordinate is set to 0 here, elevation is handled
         separately via heightmap.
@@ -50,10 +61,11 @@ class CoordinateConverter:
         local_y = utm_y - self.origin_utm_y
         local_z = 0.0
         return local_x, local_y, local_z
-    
+
     def wgs84_to_gazebo(self, location_wgs84: tuple) -> tuple:
         """
-        Converts WGS84 (lat, lon) directly to local Gazebo coordinates (x, y, z=0).
+        Convert WGS84 (lat, lon) directly to local Gazebo coordinates (x, y, z=0).
+
         This is a convenience function combining WGS84 to UTM and UTM to local Gazebo
         conversion.
         """
@@ -61,23 +73,23 @@ class CoordinateConverter:
         return self.utm_to_local_gazebo(utm_coords)
 
     def gazebo_to_utm(self, gazebo_coords: tuple) -> tuple:
-        """Converts local Gazebo coordinates (x, y) back to UTM (x, y)"""
+        """Convert local Gazebo coordinates (x, y) back to UTM (x, y)."""
         local_x, local_y = gazebo_coords
         utm_x = local_x + self.origin_utm_x
         utm_y = local_y + self.origin_utm_y
         return utm_x, utm_y
-    
+
     def utm_to_wgs84(self, utm_coords: tuple) -> tuple:
-        """Converts UTM (x, y) coordinates backs to WGS84 (lat, lon)"""
+        """Convert UTM (x, y) coordinates back to WGS84 (lat, lon)."""
         utm_x, utm_y = utm_coords
         lon, lat = self.utm_to_wgs84_transformer.transform(utm_x, utm_y)
         return lat, lon
-    
+
     def gazebo_to_wgs84(self, gazebo_coords: tuple) -> tuple:
         """
-        Converts local Gazebo coordinates (x, y) back to WGS84 (latitude, longitude).
+        Convert local Gazebo coordinates (x, y) back to WGS84 (latitude, longitude).
+
         This is a convenience function combining Gazebo to UTM and UTM to WGS84 conversion.
         """
         utm_coords = self.gazebo_to_utm(gazebo_coords)
         return self.utm_to_wgs84(utm_coords)
-    

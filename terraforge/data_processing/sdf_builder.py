@@ -1,3 +1,6 @@
+# Copyright 2024 TerraForge Contributors
+#
+# Licensed under the MIT License.
 import math
 import os
 from urllib.parse import quote
@@ -99,7 +102,7 @@ def _fuel_tree_tile_map(trees, half_extent_m, tile_size_m):
 
 
 def build_scene_tiles(buildings, trees, roads, half_extent_m,
-                       tile_size_m=DEFAULT_TILE_SIZE_M):
+                      tile_size_m=DEFAULT_TILE_SIZE_M):
     """Group every static placement into tile buckets and render each as a
     compound <model name='tile_X_Y'> with all its links inline.
 

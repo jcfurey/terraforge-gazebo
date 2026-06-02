@@ -1,3 +1,6 @@
+# Copyright 2024 TerraForge Contributors
+#
+# Licensed under the MIT License.
 """Stable per-process RNG seeding helper.
 
 Used by tree_processor and building_processor for per-instance jitter

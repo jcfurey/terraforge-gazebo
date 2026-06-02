@@ -1,3 +1,6 @@
+# Copyright 2024 TerraForge Contributors
+#
+# Licensed under the MIT License.
 """Raster foliage mask for the image-based tree-scatter path.
 
 This is the FoliageMask analogue of cloud_mask.CloudMask. Where CloudMask
@@ -153,7 +156,8 @@ def _rasterize_polygons(polys_gazebo, image_size_px, world_half_extent_m,
                 poly = poly.buffer(dilate_m, resolution=2)
             except Exception:
                 pass
-        geoms = [poly] if isinstance(poly, shapely.geometry.Polygon) else list(getattr(poly, 'geoms', [poly]))
+        geoms = ([poly] if isinstance(poly, shapely.geometry.Polygon)
+                 else list(getattr(poly, 'geoms', [poly])))
         for g in geoms:
             if not isinstance(g, shapely.geometry.Polygon) or g.is_empty:
                 continue

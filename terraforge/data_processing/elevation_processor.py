@@ -1,3 +1,6 @@
+# Copyright 2024 TerraForge Contributors
+#
+# Licensed under the MIT License.
 import numpy as np
 from osgeo import gdal
 from PIL import Image

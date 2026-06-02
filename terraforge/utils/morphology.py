@@ -1,3 +1,6 @@
+# Copyright 2024 TerraForge Contributors
+#
+# Licensed under the MIT License.
 """Boolean-mask morphology helpers shared between CloudMask and FoliageMask.
 
 Both masks run a strict-seed → opening → loose-envelope geodesic dilation

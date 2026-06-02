@@ -1,3 +1,6 @@
+# Copyright 2024 TerraForge Contributors
+#
+# Licensed under the MIT License.
 """Small exponential-backoff retry helper for transient network failures.
 
 Used by DEM (SRTM / Overpass), OSM (Overpass via osmnx), and satellite

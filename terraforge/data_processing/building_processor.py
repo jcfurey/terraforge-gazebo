@@ -1,3 +1,6 @@
+# Copyright 2024 TerraForge Contributors
+#
+# Licensed under the MIT License.
 
 import json
 import math as _math
@@ -84,7 +87,7 @@ def _area_based_default_height(area_m2: float) -> float:
 
 
 def _infer_height(props: dict, area_m2: float = 0.0,
-                   rng: _random.Random = None) -> float:
+                  rng: _random.Random = None) -> float:
     """Derive a plausible building height from OSM tags, with fallbacks.
 
     Priority:
@@ -126,7 +129,7 @@ def _jitter(h: float, rng: _random.Random) -> float:
 
 
 def _polygon_to_polyline_body_sdf(polygon, name_prefix: str, pose_xyz: tuple,
-                                   height: float, color=(0.7, 0.7, 0.7)) -> str:
+                                  height: float, color=(0.7, 0.7, 0.7)) -> str:
     """Return `<collision>` + `<visual>` for a building, with poses baked
     into each child element and element names made unique via
     ``name_prefix``.
@@ -185,7 +188,7 @@ def _polygon_to_polyline_body_sdf(polygon, name_prefix: str, pose_xyz: tuple,
 
 
 def _polygon_to_box_body_sdf(polygon, name_prefix: str, pose_xyz: tuple,
-                              height: float, color=(0.7, 0.7, 0.7)) -> str:
+                             height: float, color=(0.7, 0.7, 0.7)) -> str:
     """Bounding-box fallback body fragment. Used when polyline extrusion
     isn't viable (multi-polygon exterior, self-intersecting, etc.)."""
     minx, miny, maxx, maxy = polygon.bounds

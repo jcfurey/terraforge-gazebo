@@ -1,3 +1,6 @@
+# Copyright 2024 TerraForge Contributors
+#
+# Licensed under the MIT License.
 """Turn OSM ``highway=*`` LineStrings into Gazebo road models.
 
 Each OSM way becomes one static model. The way's polyline is buffered by its
