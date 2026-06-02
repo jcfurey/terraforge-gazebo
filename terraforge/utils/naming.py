@@ -1,3 +1,6 @@
+# Copyright 2024 TerraForge Contributors
+#
+# Licensed under the MIT License.
 """Identifier sanitation for values that flow into paths or SDF XML.
 
 `world_name` ends up in filesystem paths (per-world media subdir) and as
@@ -23,11 +26,11 @@ def safe_identifier(value: str, *, field: str) -> str:
     extension stub or a hyphenated suffix).
     """
     if not isinstance(value, str) or not value:
-        raise ValueError(f"{field} must be a non-empty string")
+        raise ValueError(f'{field} must be a non-empty string')
     if not _SAFE_IDENT.match(value):
         raise ValueError(
-            f"{field}={value!r} contains disallowed characters. "
+            f'{field}={value!r} contains disallowed characters. '
             f"Allowed: letters, digits, '_', '.', '-'; must start AND end "
-            f"with a letter/digit/underscore."
+            f'with a letter/digit/underscore.'
         )
     return value

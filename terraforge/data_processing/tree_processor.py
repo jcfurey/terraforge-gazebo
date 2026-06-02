@@ -1,5 +1,10 @@
-"""Turn OSM ``natural=tree`` points and ``natural=wood`` / ``landuse=forest``
-polygons into Gazebo tree instances.
+# Copyright 2024 TerraForge Contributors
+#
+# Licensed under the MIT License.
+"""Turn OSM vegetation features into Gazebo tree instances.
+
+Handles ``natural=tree`` points and ``natural=wood`` / ``landuse=forest``
+polygons.
 
 Each tree is a single static model (trunk cylinder + canopy sphere). We emit
 one reusable ``tree_generic_<variant>`` model and place many ``<include>``
@@ -12,11 +17,11 @@ import os
 import random
 
 import numpy as np
+from PIL import Image, ImageDraw
 import shapely
 import shapely.affinity
 import shapely.geometry
 import shapely.ops
-from PIL import Image, ImageDraw
 
 from terraforge.utils.coordinates import CoordinateConverter
 from terraforge.utils.logging import logger
@@ -130,20 +135,26 @@ _TRUNK_H_JITTER = 0.15
 
 def _rand_color(palette, jitter_rng) -> tuple:
     r, g, b = palette[jitter_rng.randrange(len(palette))]
+
     # Small hue noise so even within a palette entry, adjacent trees vary.
-    d = lambda: jitter_rng.uniform(-0.04, 0.04)
+    def d():
+        return jitter_rng.uniform(-0.04, 0.04)
+
     return (max(0.0, min(1.0, r + d())),
             max(0.0, min(1.0, g + d())),
             max(0.0, min(1.0, b + d())))
 
 
 def _broadleaf_canopy(base_z: float, cr: float, rng) -> str:
-    """Multi-sphere blob canopy — oak/maple look. Spheres overlap and offset
-    horizontally so the silhouette isn't a perfect circle from any angle."""
+    """Multi-sphere blob canopy — oak/maple look.
+
+    Spheres overlap and offset
+    horizontally so the silhouette isn't a perfect circle from any angle.
+    """
     r_c, g_c, b_c = _rand_color(_CANOPY_COLORS['broadleaf'], rng)
-    mat = (f"<material><ambient>{r_c:.3f} {g_c:.3f} {b_c:.3f} 1</ambient>"
-           f"<diffuse>{r_c:.3f} {g_c:.3f} {b_c:.3f} 1</diffuse>"
-           f"<specular>0.02 0.02 0.02 1</specular></material>")
+    mat = (f'<material><ambient>{r_c:.3f} {g_c:.3f} {b_c:.3f} 1</ambient>'
+           f'<diffuse>{r_c:.3f} {g_c:.3f} {b_c:.3f} 1</diffuse>'
+           f'<specular>0.02 0.02 0.02 1</specular></material>')
     # Three overlapping spheres around the trunk top.
     offsets = [
         (0.0, 0.0, 0.0, 1.00),
@@ -154,22 +165,26 @@ def _broadleaf_canopy(base_z: float, cr: float, rng) -> str:
     for i, (dx, dy, dz, scale) in enumerate(offsets):
         parts.append(
             f"      <visual name='canopy_{i}'>\n"
-            f"        <pose>{dx:.3f} {dy:.3f} {base_z + dz:.3f} 0 0 0</pose>\n"
-            f"        <geometry><sphere><radius>{cr * scale:.3f}</radius></sphere></geometry>\n"
-            f"        {mat}\n"
-            f"      </visual>"
+            f'        <pose>{dx:.3f} {dy:.3f} {base_z + dz:.3f} 0 0 0</pose>\n'
+            f'        <geometry><sphere><radius>{cr * scale:.3f}</radius></sphere></geometry>\n'
+            f'        {mat}\n'
+            f'      </visual>'
         )
-    return "\n".join(parts)
+    return '\n'.join(parts)
 
 
 def _conifer_canopy(base_z: float, ch_half: float, cr: float, rng) -> str:
-    """Spire canopy — stacked cylinders with decreasing radius, pine/spruce
-    silhouette. Uses cylinder primitives since gz-sim primitive cone support
-    is uneven across render backends."""
+    """Spire canopy with a pine/spruce silhouette.
+
+    Stacked cylinders with decreasing radius.
+
+    Uses cylinder primitives since gz-sim primitive cone support
+    is uneven across render backends.
+    """
     r_c, g_c, b_c = _rand_color(_CANOPY_COLORS['conifer'], rng)
-    mat = (f"<material><ambient>{r_c:.3f} {g_c:.3f} {b_c:.3f} 1</ambient>"
-           f"<diffuse>{r_c:.3f} {g_c:.3f} {b_c:.3f} 1</diffuse>"
-           f"<specular>0.02 0.02 0.02 1</specular></material>")
+    mat = (f'<material><ambient>{r_c:.3f} {g_c:.3f} {b_c:.3f} 1</ambient>'
+           f'<diffuse>{r_c:.3f} {g_c:.3f} {b_c:.3f} 1</diffuse>'
+           f'<specular>0.02 0.02 0.02 1</specular></material>')
     # Three stacked cylinders: wide base, mid, narrow top.
     total_h = ch_half * 2.0
     sections = [
@@ -182,37 +197,43 @@ def _conifer_canopy(base_z: float, ch_half: float, cr: float, rng) -> str:
         cz = base_z - ch_half + z_off + seg_h / 2.0
         parts.append(
             f"      <visual name='canopy_{i}'>\n"
-            f"        <pose>0 0 {cz:.3f} 0 0 0</pose>\n"
-            f"        <geometry><cylinder><radius>{seg_r:.3f}</radius><length>{seg_h:.3f}</length></cylinder></geometry>\n"
-            f"        {mat}\n"
-            f"      </visual>"
+            f'        <pose>0 0 {cz:.3f} 0 0 0</pose>\n'
+            f'        <geometry><cylinder><radius>{seg_r:.3f}</radius>'
+            f'<length>{seg_h:.3f}</length></cylinder></geometry>\n'
+            f'        {mat}\n'
+            f'      </visual>'
         )
-    return "\n".join(parts)
+    return '\n'.join(parts)
 
 
 def _shrub_canopy(base_z: float, cr: float, rng) -> str:
-    """Low wide mound — flattened sphere, optionally with a second small
-    bump for brush/hedgerow feel."""
+    """Low wide mound canopy for brush/hedgerow feel.
+
+    A flattened sphere, optionally with a second small bump.
+    """
     r_c, g_c, b_c = _rand_color(_CANOPY_COLORS['shrub'], rng)
-    mat = (f"<material><ambient>{r_c:.3f} {g_c:.3f} {b_c:.3f} 1</ambient>"
-           f"<diffuse>{r_c:.3f} {g_c:.3f} {b_c:.3f} 1</diffuse>"
-           f"<specular>0.02 0.02 0.02 1</specular></material>")
+    mat = (f'<material><ambient>{r_c:.3f} {g_c:.3f} {b_c:.3f} 1</ambient>'
+           f'<diffuse>{r_c:.3f} {g_c:.3f} {b_c:.3f} 1</diffuse>'
+           f'<specular>0.02 0.02 0.02 1</specular></material>')
     # Ellipsoid via sphere scaled by pose is not SDF-legal; use a short fat
     # cylinder for the main mound and a small sphere cap on top.
     mound_h = cr * 0.9
     parts = [
         f"      <visual name='canopy_mound'>\n"
-        f"        <pose>0 0 {base_z:.3f} 0 0 0</pose>\n"
-        f"        <geometry><cylinder><radius>{cr:.3f}</radius><length>{mound_h:.3f}</length></cylinder></geometry>\n"
-        f"        {mat}\n"
-        f"      </visual>",
+        f'        <pose>0 0 {base_z:.3f} 0 0 0</pose>\n'
+        f'        <geometry><cylinder><radius>{cr:.3f}</radius>'
+        f'<length>{mound_h:.3f}</length></cylinder></geometry>\n'
+        f'        {mat}\n'
+        f'      </visual>',
         f"      <visual name='canopy_cap'>\n"
-        f"        <pose>{cr*0.2*rng.choice((-1,1)):.3f} {cr*0.2*rng.choice((-1,1)):.3f} {base_z + mound_h * 0.4:.3f} 0 0 0</pose>\n"
-        f"        <geometry><sphere><radius>{cr*0.55:.3f}</radius></sphere></geometry>\n"
-        f"        {mat}\n"
-        f"      </visual>",
+        f'        <pose>{cr*0.2*rng.choice((-1, 1)):.3f} '
+        f'{cr*0.2*rng.choice((-1, 1)):.3f} '
+        f'{base_z + mound_h * 0.4:.3f} 0 0 0</pose>\n'
+        f'        <geometry><sphere><radius>{cr*0.55:.3f}</radius></sphere></geometry>\n'
+        f'        {mat}\n'
+        f'      </visual>',
     ]
-    return "\n".join(parts)
+    return '\n'.join(parts)
 
 
 def _tree_link_sdf(link_name: str, pose_xyz: tuple, variant_idx: int) -> str:
@@ -268,7 +289,7 @@ def _tree_link_sdf(link_name: str, pose_xyz: tuple, variant_idx: int) -> str:
 
 
 def _variant_label(variant_idx: int) -> str:
-    return f"tree_generic_{variant_idx}"
+    return f'tree_generic_{variant_idx}'
 
 
 def fuel_wrapper_model_names() -> list:
@@ -278,7 +299,7 @@ def fuel_wrapper_model_names() -> list:
     ``model://tree_fuel_<i>`` is resolved against ``GZ_SIM_RESOURCE_PATH``
     (or a path the generator bundles into the output world) at load time.
     """
-    return [f"tree_fuel_{i}" for i in range(TREE_VARIANTS)]
+    return [f'tree_fuel_{i}' for i in range(TREE_VARIANTS)]
 
 
 def _fuel_wrapper_sdf(name: str, variant_idx: int) -> str:
@@ -301,16 +322,16 @@ def _fuel_wrapper_sdf(name: str, variant_idx: int) -> str:
     canopy_z = trunk_h + canopy_half_h
     if shape == 'conifer':
         canopy_visual = (
-            f"        <geometry><cone>"
-            f"<radius>{canopy_r:.3f}</radius>"
-            f"<length>{2 * canopy_half_h:.3f}</length>"
-            f"</cone></geometry>"
+            f'        <geometry><cone>'
+            f'<radius>{canopy_r:.3f}</radius>'
+            f'<length>{2 * canopy_half_h:.3f}</length>'
+            f'</cone></geometry>'
         )
     else:
         canopy_visual = (
-            f"        <geometry><sphere>"
-            f"<radius>{canopy_r:.3f}</radius>"
-            f"</sphere></geometry>"
+            f'        <geometry><sphere>'
+            f'<radius>{canopy_r:.3f}</radius>'
+            f'</sphere></geometry>'
         )
     return f"""<?xml version='1.0'?>
 <sdf version='1.10'>
@@ -354,9 +375,10 @@ def _fuel_wrapper_config(name: str) -> str:
 
 
 def write_fuel_wrappers(dest_dir: str) -> list:
-    """Write minimal wrapper model dirs for every fuel variant under
-    ``dest_dir`` (one ``tree_fuel_<i>/model.sdf`` + ``model.config`` per
-    variant). Returns the list of wrapper names written.
+    """Write minimal wrapper model dirs for every fuel variant.
+
+    Writes one ``tree_fuel_<i>/model.sdf`` + ``model.config`` per variant
+    under ``dest_dir``. Returns the list of wrapper names written.
 
     Idempotent — existing wrappers are left alone so a user-supplied
     pack that appears earlier on ``GZ_SIM_RESOURCE_PATH`` continues to
@@ -366,7 +388,7 @@ def write_fuel_wrappers(dest_dir: str) -> list:
     os.makedirs(dest_dir, exist_ok=True)
     written = []
     for variant_idx in range(TREE_VARIANTS):
-        name = f"tree_fuel_{variant_idx}"
+        name = f'tree_fuel_{variant_idx}'
         model_dir = os.path.join(dest_dir, name)
         sdf_path = os.path.join(model_dir, 'model.sdf')
         cfg_path = os.path.join(model_dir, 'model.config')
@@ -411,8 +433,9 @@ def missing_fuel_wrappers(extra_roots: list = None) -> list:
 
 
 def _tree_fuel_include_sdf(unique_name: str, pose_xyz: tuple, variant_idx: int) -> str:
-    """Emit a top-level `<include>` referencing a `tree_fuel_<variant>` wrapper
-    model. The wrapper is resolved via `GZ_SIM_RESOURCE_PATH` — it lives under
+    """Emit a top-level `<include>` referencing a `tree_fuel_<variant>` wrapper.
+
+    The wrapper model is resolved via `GZ_SIM_RESOURCE_PATH` — it lives under
     `<world-dir>/models_fuel/tree_fuel_<variant>/`, where its `model.sdf`
     `<include>`s the real Gazebo Fuel URI (Oak tree / Pine Tree) with the
     appropriate `<scale>` for this variant's size class.
@@ -426,11 +449,11 @@ def _tree_fuel_include_sdf(unique_name: str, pose_xyz: tuple, variant_idx: int) 
     rng = random.Random(stable_seed(unique_name, variant_idx))
     yaw = rng.uniform(0.0, 6.2832)
     return (
-        f"<include>\n"
-        f"  <name>{unique_name}</name>\n"
-        f"  <pose>{px:.3f} {py:.3f} {pz:.3f} 0 0 {yaw:.3f}</pose>\n"
-        f"  <uri>model://tree_fuel_{variant_idx}</uri>\n"
-        f"</include>"
+        f'<include>\n'
+        f'  <name>{unique_name}</name>\n'
+        f'  <pose>{px:.3f} {py:.3f} {pz:.3f} 0 0 {yaw:.3f}</pose>\n'
+        f'  <uri>model://tree_fuel_{variant_idx}</uri>\n'
+        f'</include>'
     )
 
 
@@ -488,7 +511,7 @@ def _load_building_polygons_gazebo(buildings_geojson_path: str, converter, world
         with open(buildings_geojson_path, encoding='utf-8') as f:
             data = json.load(f)
     except Exception as e:
-        logger.warning(f"Could not load buildings for tree exclusion: {e}")
+        logger.warning(f'Could not load buildings for tree exclusion: {e}')
         return []
 
     polys = []
@@ -534,7 +557,7 @@ def _build_vegetation_mask(texture_path: str):
     JPEG compression artefacts, etc.). Returns the boolean mask (shape
     H x W) and the PIL image size.
     """
-    img = Image.open(texture_path).convert("RGB")
+    img = Image.open(texture_path).convert('RGB')
     w, h = img.size
     arr = np.asarray(img, dtype=np.float32) / 255.0
     R, G, B = arr[..., 0], arr[..., 1], arr[..., 2]
@@ -549,16 +572,16 @@ def _build_vegetation_mask(texture_path: str):
     else:
         e50 = e90 = e99 = l50 = l90 = l99 = 0.0
     logger.info(
-        f"Vegetation detector: EXG p50/p90/p99 = {e50:.3f}/{e90:.3f}/{e99:.3f}, "
-        f"L p50/p90/p99 = {l50:.3f}/{l90:.3f}/{l99:.3f} "
-        f"(thresholds: EXG>{VEGETATION_EXG_MIN}, L<{VEGETATION_L_MAX})"
+        f'Vegetation detector: EXG p50/p90/p99 = {e50:.3f}/{e90:.3f}/{e99:.3f}, '
+        f'L p50/p90/p99 = {l50:.3f}/{l90:.3f}/{l99:.3f} '
+        f'(thresholds: EXG>{VEGETATION_EXG_MIN}, L<{VEGETATION_L_MAX})'
     )
     mask = (exg > VEGETATION_EXG_MIN) & (luminance < VEGETATION_L_MAX)
     return mask, (w, h)
 
 
 def _rasterize_building_mask(building_polys_gazebo, image_size_px, world_half_extent_m,
-                              dilate_m: float = 0.0):
+                             dilate_m: float = 0.0):
     """Rasterize building footprints into a boolean mask at image resolution.
 
     ``dilate_m`` buffers each polygon outward by this many meters before
@@ -612,7 +635,7 @@ def _scatter_on_vegetation(
     that predate the foliage-mask CLI flag (``--foliage-mask off``) still work.
     """
     if not texture_path or not os.path.exists(texture_path):
-        logger.info("No satellite texture — skipping vegetation-based tree fill.")
+        logger.info('No satellite texture — skipping vegetation-based tree fill.')
         return 0
     # Figure out the reference pixel grid. We always use the satellite
     # texture's native grid so the sampled Gazebo-frame (cx, cy) → pixel
@@ -625,9 +648,9 @@ def _scatter_on_vegetation(
         placeable = foliage_mask.sample_grid(w, h, world_half_extent_m)
         placeable_frac = float(placeable.mean()) if placeable.size else 0.0
         logger.info(
-            f"Vegetation scatter using FoliageMask "
-            f"(mask native {foliage_mask.width}x{foliage_mask.height}, "
-            f"placeable {placeable_frac:.1%} after resample to {w}x{h})"
+            f'Vegetation scatter using FoliageMask '
+            f'(mask native {foliage_mask.width}x{foliage_mask.height}, '
+            f'placeable {placeable_frac:.1%} after resample to {w}x{h})'
         )
     else:
         veg_mask, _ = _build_vegetation_mask(texture_path)
@@ -640,9 +663,9 @@ def _scatter_on_vegetation(
         bldg_frac = float(bldg_mask.mean()) if bldg_mask.size else 0.0
         placeable_frac = float(placeable.mean()) if placeable.size else 0.0
         logger.info(
-            f"Vegetation mask (legacy EXG path): {veg_frac:.1%} green "
-            f"(EXG>{VEGETATION_EXG_MIN}, L<{VEGETATION_L_MAX}), "
-            f"{bldg_frac:.1%} buildings — {placeable_frac:.1%} placeable"
+            f'Vegetation mask (legacy EXG path): {veg_frac:.1%} green '
+            f'(EXG>{VEGETATION_EXG_MIN}, L<{VEGETATION_L_MAX}), '
+            f'{bldg_frac:.1%} buildings — {placeable_frac:.1%} placeable'
         )
 
     pitch_m = 1.0 / math.sqrt(VEGETATION_DENSITY)
@@ -705,10 +728,10 @@ def process_osm_trees_to_sdf(osm_filepath: str, models_dir: str, origin_wgs84: t
       scope, with a per-tile `<ref>` so level streaming still works.
     """
     if not os.path.exists(osm_filepath):
-        logger.info("No OSM foliage file; skipping trees stage.")
+        logger.info('No OSM foliage file; skipping trees stage.')
         return []
 
-    logger.info(f"Processing OSM foliage from {osm_filepath}")
+    logger.info(f'Processing OSM foliage from {osm_filepath}')
     os.makedirs(models_dir, exist_ok=True)
     rng = random.Random(seed)
 
@@ -761,7 +784,7 @@ def process_osm_trees_to_sdf(osm_filepath: str, models_dir: str, origin_wgs84: t
         pool = variant_pool if variant_pool is not None else tuple(range(TREE_VARIANTS))
         variant_idx = rng.choice(pool)
         z = float(elevation_sampler(x, y)) if elevation_sampler is not None else 0.0
-        link_name = f"tree_{len(placements)}"
+        link_name = f'tree_{len(placements)}'
         placement = {
             'model_name': _variant_label(variant_idx),
             'link_name': link_name,   # unique per-instance link id inside tile model
@@ -774,7 +797,7 @@ def process_osm_trees_to_sdf(osm_filepath: str, models_dir: str, origin_wgs84: t
             # tile compound (SDF doesn't allow `<include>` inside `<model>`);
             # it emits it at world scope and registers a per-tile <ref> so
             # level streaming still culls it when the rover is far away.
-            fuel_name = f"tree_fuel_{len(placements)}"
+            fuel_name = f'tree_fuel_{len(placements)}'
             placement['fuel_include_name'] = fuel_name
             placement['fuel_include_sdf'] = _tree_fuel_include_sdf(
                 fuel_name, (x, y, z), variant_idx,
@@ -787,8 +810,10 @@ def process_osm_trees_to_sdf(osm_filepath: str, models_dir: str, origin_wgs84: t
         placements.append(placement)
 
     def _classify_polygon(props):
-        """Return the _POLYGON_CLASSES entry matching this feature's tags,
-        or None if the polygon isn't a recognized foliage class."""
+        """Return the _POLYGON_CLASSES entry matching this feature's tags.
+
+        Returns None if the polygon isn't a recognized foliage class.
+        """
         for (key, value), cfg in _POLYGON_CLASSES.items():
             if props.get(key) == value:
                 return cfg
@@ -873,7 +898,7 @@ def process_osm_trees_to_sdf(osm_filepath: str, models_dir: str, origin_wgs84: t
     if vegetation_fill and satellite_texture_path:
         remaining = max(0, MAX_FOREST_TREES - osm_count)
         if remaining == 0:
-            logger.info("Tree budget exhausted by OSM; skipping vegetation fill.")
+            logger.info('Tree budget exhausted by OSM; skipping vegetation fill.')
         else:
             # Only the legacy-EXG fallback path needs building polygons — the
             # FoliageMask has already rasterized them at construction time.
@@ -895,12 +920,12 @@ def process_osm_trees_to_sdf(osm_filepath: str, models_dir: str, origin_wgs84: t
                 foliage_mask=foliage_mask,
             )
 
-    style_tag = "fuel-include" if foliage_style == 'fuel' else "inline"
+    style_tag = 'fuel-include' if foliage_style == 'fuel' else 'inline'
     logger.info(
-        f"OSM foliage processed: {len(placements)} trees "
-        f"({point_count} mapped points, {line_count} hedgerows, "
-        f"{poly_count} vegetated polygons, {veg_count} image-vegetation, "
-        f"{cloud_skipped} cloud-masked, {out_of_world_skipped} outside-world) "
-        f"across {TREE_VARIANTS} {style_tag} variants"
+        f'OSM foliage processed: {len(placements)} trees '
+        f'({point_count} mapped points, {line_count} hedgerows, '
+        f'{poly_count} vegetated polygons, {veg_count} image-vegetation, '
+        f'{cloud_skipped} cloud-masked, {out_of_world_skipped} outside-world) '
+        f'across {TREE_VARIANTS} {style_tag} variants'
     )
     return placements

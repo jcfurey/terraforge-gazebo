@@ -18,13 +18,15 @@ from terraforge import cli  # noqa: E402
 
 
 def _never_call(*_a, **_kw):
-    raise AssertionError("this stage should not have run")
+    raise AssertionError('this stage should not have run')
 
 
 def test_cancel_before_dem_download(tmp_path, monkeypatch):
-    """A cancel flag that is always True short-circuits the pipeline at
-    the first check (right after identifier validation, before any
-    network I/O)."""
+    """An always-True cancel flag short-circuits before any network I/O.
+
+    The pipeline bails at the first check, right after identifier
+    validation and before any network I/O.
+    """
     # Patch every stage that would otherwise run so the test doesn't
     # silently succeed by hitting a network path.
     monkeypatch.setattr(cli.elevation, 'download_dem', _never_call)
@@ -41,8 +43,9 @@ def test_cancel_before_dem_download(tmp_path, monkeypatch):
 
 
 def test_progress_percent_is_called_in_order(tmp_path, monkeypatch):
-    """progress_percent should be invoked monotonically at stage
-    transitions. We monkeypatch download_dem to raise a sentinel after
+    """Verify progress_percent fires monotonically at stage transitions.
+
+    We monkeypatch download_dem to raise a sentinel after
     the first _pct(5) so we can inspect the call record without running
     the full pipeline.
     """

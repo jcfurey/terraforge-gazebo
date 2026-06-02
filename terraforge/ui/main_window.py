@@ -1,8 +1,11 @@
+# Copyright 2024 TerraForge Contributors
+#
+# Licensed under the MIT License.
 import logging
 import os
 import sys
 
-from PyQt6.QtCore import QThread, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import pyqtSignal, pyqtSlot, QThread
 from PyQt6.QtWidgets import (
     QApplication,
     QFileDialog,
@@ -42,9 +45,12 @@ class WorldGeneratorThread(QThread):
         self._cancel = False
 
     def cancel(self):
-        """Request cancellation. The pipeline polls this between stages
-        and raises InterruptedError from run_generate_world, which we
-        catch below and emit as generation_cancelled."""
+        """Request cancellation.
+
+        The pipeline polls this between stages and raises InterruptedError
+        from run_generate_world, which we catch below and emit as
+        generation_cancelled.
+        """
         self._cancel = True
 
     def run(self):
@@ -64,14 +70,14 @@ class WorldGeneratorThread(QThread):
         except InterruptedError:
             self.generation_cancelled.emit()
         except Exception as e:
-            logger.exception("World generation failed")
+            logger.exception('World generation failed')
             self.generation_error.emit(str(e))
 
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("TerraForge Gazebo World Builder")
+        self.setWindowTitle('TerraForge Gazebo World Builder')
         self.resize(640, 520)
 
         central = QWidget(self)
@@ -79,27 +85,27 @@ class MainWindow(QMainWindow):
         root = QVBoxLayout(central)
 
         form = QFormLayout()
-        self.latitudeLineEdit = QLineEdit("37.7749")
-        self.longitudeLineEdit = QLineEdit("-122.4194")
-        self.radiusLineEdit = QLineEdit("1000")
-        self.worldNameLineEdit = QLineEdit("generated_world")
+        self.latitudeLineEdit = QLineEdit('37.7749')
+        self.longitudeLineEdit = QLineEdit('-122.4194')
+        self.radiusLineEdit = QLineEdit('1000')
+        self.worldNameLineEdit = QLineEdit('generated_world')
         self.outputDirLineEdit = QLineEdit(os.path.abspath('generated_worlds_gui'))
-        form.addRow("Latitude:", self.latitudeLineEdit)
-        form.addRow("Longitude:", self.longitudeLineEdit)
-        form.addRow("Radius (m):", self.radiusLineEdit)
-        form.addRow("World name:", self.worldNameLineEdit)
+        form.addRow('Latitude:', self.latitudeLineEdit)
+        form.addRow('Longitude:', self.longitudeLineEdit)
+        form.addRow('Radius (m):', self.radiusLineEdit)
+        form.addRow('World name:', self.worldNameLineEdit)
 
         out_row = QHBoxLayout()
         out_row.addWidget(self.outputDirLineEdit)
-        self.browseOutputDirButton = QPushButton("Browse...")
+        self.browseOutputDirButton = QPushButton('Browse...')
         out_row.addWidget(self.browseOutputDirButton)
-        form.addRow("Output directory:", out_row)
+        form.addRow('Output directory:', out_row)
 
         root.addLayout(form)
 
         button_row = QHBoxLayout()
-        self.generateWorldButton = QPushButton("Generate World")
-        self.cancelButton = QPushButton("Cancel")
+        self.generateWorldButton = QPushButton('Generate World')
+        self.cancelButton = QPushButton('Cancel')
         self.cancelButton.setEnabled(False)
         button_row.addWidget(self.generateWorldButton)
         button_row.addWidget(self.cancelButton)
@@ -125,7 +131,7 @@ class MainWindow(QMainWindow):
         dialog.setFileMode(QFileDialog.FileMode.Directory)
         dialog.setOption(QFileDialog.Option.ShowDirsOnly, True)
         output_dir = dialog.getExistingDirectory(
-            self, "Select Output Directory", self.outputDirLineEdit.text()
+            self, 'Select Output Directory', self.outputDirLineEdit.text()
         )
         if output_dir:
             self.outputDirLineEdit.setText(output_dir)
@@ -138,18 +144,18 @@ class MainWindow(QMainWindow):
             radius = float(self.radiusLineEdit.text())
         except ValueError:
             QMessageBox.warning(
-                self, "Input Error",
-                "Please enter valid numeric values for Latitude, Longitude, and Radius.",
+                self, 'Input Error',
+                'Please enter valid numeric values for Latitude, Longitude, and Radius.',
             )
             return
 
         world_name = self.worldNameLineEdit.text().strip()
         output_dir = self.outputDirLineEdit.text().strip()
         if not world_name:
-            QMessageBox.warning(self, "Warning", "World name cannot be empty.")
+            QMessageBox.warning(self, 'Warning', 'World name cannot be empty.')
             return
         if not output_dir:
-            QMessageBox.warning(self, "Warning", "Output directory cannot be empty.")
+            QMessageBox.warning(self, 'Warning', 'Output directory cannot be empty.')
             return
 
         os.makedirs(output_dir, exist_ok=True)
@@ -173,8 +179,8 @@ class MainWindow(QMainWindow):
     @pyqtSlot()
     def cancel_world_generation(self):
         if self.world_gen_thread is not None and self.world_gen_thread.isRunning():
-            self.logPlainTextEdit.appendPlainText("Cancellation requested — "
-                                                  "finishing current stage then aborting.")
+            self.logPlainTextEdit.appendPlainText('Cancellation requested — '
+                                                  'finishing current stage then aborting.')
             self.world_gen_thread.cancel()
             # Button stays enabled for a moment in case the user wants to click
             # again; the thread's final emit of generation_cancelled resets it.
@@ -197,19 +203,19 @@ class MainWindow(QMainWindow):
         self.progressBar.setValue(100)
         self._reset_buttons()
         QMessageBox.information(
-            self, "Success", f"Gazebo world generated successfully:\n{world_path}"
+            self, 'Success', f'Gazebo world generated successfully:\n{world_path}'
         )
 
     def on_generation_error(self, error_message):
         self.progressBar.setValue(0)
         self._reset_buttons()
-        QMessageBox.critical(self, "Error", f"World generation failed:\n{error_message}")
-        self.logPlainTextEdit.appendPlainText(f"Error: {error_message}")
+        QMessageBox.critical(self, 'Error', f'World generation failed:\n{error_message}')
+        self.logPlainTextEdit.appendPlainText(f'Error: {error_message}')
 
     def on_generation_cancelled(self):
         self.progressBar.setValue(0)
         self._reset_buttons()
-        self.logPlainTextEdit.appendPlainText("World generation cancelled.")
+        self.logPlainTextEdit.appendPlainText('World generation cancelled.')
 
 
 def main():

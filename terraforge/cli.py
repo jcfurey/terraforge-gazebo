@@ -1,3 +1,6 @@
+# Copyright 2024 TerraForge Contributors
+#
+# Licensed under the MIT License.
 import logging
 import os
 import shutil
@@ -40,7 +43,7 @@ def _choose_heightmap_size(src_dem_path: str, max_size: int) -> int:
     """
     ds = gdal.Open(src_dem_path)
     if ds is None:
-        raise RuntimeError(f"Failed to open DEM for sizing: {src_dem_path}")
+        raise RuntimeError(f'Failed to open DEM for sizing: {src_dem_path}')
     try:
         src_w = ds.RasterXSize
         src_h = ds.RasterYSize
@@ -49,11 +52,88 @@ def _choose_heightmap_size(src_dem_path: str, max_size: int) -> int:
     chosen = elevation_processor.next_ogre2_size(max(src_w, src_h), max_size=max_size)
     if max(src_w, src_h) > chosen:
         logger.warning(
-            f"Source DEM is {src_w}x{src_h}; capping heightmap to "
-            f"{chosen}x{chosen} (raise --max-heightmap-size to preserve "
-            f"native resolution at the cost of GPU memory / load time)."
+            f'Source DEM is {src_w}x{src_h}; capping heightmap to '
+            f'{chosen}x{chosen} (raise --max-heightmap-size to preserve '
+            f'native resolution at the cost of GPU memory / load time).'
         )
     return chosen
+
+
+def _setup_fuel_wrappers(output_dir):
+    """Write Gazebo Fuel wrapper models for ``--foliage-style fuel``.
+
+    Fuel mode emits ``<include><uri>model://tree_fuel_<i></uri></include>``.
+    Auto-generate minimal wrappers into ``<output>/models_fuel/`` so the
+    world is self-contained. ``spawn_world.launch.py`` adds that dir to
+    ``GZ_SIM_RESOURCE_PATH``; if the operator has a richer wrapper pack
+    earlier on the path (e.g. mesh-backed fuel trees in a bringup
+    workspace), it takes precedence because ``write_fuel_wrappers`` only
+    writes files that don't already exist.
+    """
+    models_fuel_dir = os.path.join(os.path.abspath(output_dir), 'models_fuel')
+    written = tree_processor.write_fuel_wrappers(models_fuel_dir)
+    if written:
+        logger.info(
+            f'--foliage-style fuel: wrote {len(written)} wrapper model(s) '
+            f"to {models_fuel_dir} ({', '.join(written)}). Launch will "
+            f'add this dir to GZ_SIM_RESOURCE_PATH.'
+        )
+    missing = tree_processor.missing_fuel_wrappers(extra_roots=[models_fuel_dir])
+    if missing:
+        logger.warning(
+            f'--foliage-style fuel: still missing {missing} even after '
+            f'writing defaults; check filesystem permissions on '
+            f'{models_fuel_dir}.'
+        )
+
+
+def _resolve_texture_paths(output_textures_dir, texture_file,
+                           texture_cache_dir, texture_format):
+    """Resolve the lossless texture *source* and render-only *output* paths.
+
+    Returns ``(texture_source_path, texture_output_path, texture_ext)``.
+
+    TWO distinct texture paths are deliberately kept separate:
+
+      texture_source_path (always PNG / user's raw orthophoto)
+        The LOSSLESS image every mask + analysis step reads — cloud_mask,
+        foliage_mask, tree_processor's legacy EXG vegetation scatter. JPEG
+        compression blurs low-contrast EXG thresholds (2*G - R - B) and
+        biases cloud-mask HLS saturation, so these stages MUST NOT read the
+        compressed render texture. If the user supplied --texture-file we
+        take their file as-is (they chose its quality); otherwise we produce
+        a PNG cache of the downloaded mosaic.
+
+      texture_output_path (JPEG by default, PNG optional)
+        The RENDER-ONLY asset baked into the world SDF as the heightmap
+        <diffuse>. Gazebo decodes this once at world load and uploads to the
+        GPU; JPEG is ~5x smaller + faster on smooth satellite imagery.
+        Nothing in the mask pipeline touches this file.
+
+    The two paths must never alias: if a future change accidentally routes
+    the render output back into the mask source (or vice-versa), raise now
+    rather than silently letting JPEG artefacts bias EXG / HLS thresholds.
+    """
+    if texture_file is not None:
+        texture_source_path = os.path.abspath(texture_file)
+    else:
+        texture_source_path = os.path.join(texture_cache_dir, 'satellite_texture.png')
+
+    texfmt = (texture_format or 'jpeg').lower()
+    if texfmt not in ('png', 'jpeg', 'jpg'):
+        raise ValueError(f'Unsupported texture_format={texture_format!r}; '
+                         f"expected 'png' or 'jpeg'.")
+    texture_ext = 'png' if texfmt == 'png' else 'jpg'
+    texture_output_path = os.path.join(
+        output_textures_dir, f'satellite_texture.{texture_ext}'
+    )
+    if os.path.abspath(texture_source_path) == os.path.abspath(texture_output_path):
+        raise AssertionError(
+            f'texture_source_path and texture_output_path alias the same '
+            f'file ({texture_source_path}); masks must read the lossless '
+            f'source, not the render-only output.'
+        )
+    return texture_source_path, texture_output_path, texture_ext
 
 
 def run_generate_world(
@@ -94,6 +174,7 @@ def run_generate_world(
     returns truthy, the pipeline raises ``InterruptedError`` and cleanly
     aborts instead of running the rest of the pipeline.
     """
+
     def _log(msg):
         logger.info(msg)
         if progress is not None:
@@ -105,7 +186,7 @@ def run_generate_world(
 
     def _check_cancel():
         if cancel_flag is not None and cancel_flag():
-            raise InterruptedError("World generation cancelled by user.")
+            raise InterruptedError('World generation cancelled by user.')
 
     # Validate identifiers that flow into filesystem paths and SDF XML
     # before we mkdir anything or hit the network. world_name becomes a
@@ -114,35 +195,22 @@ def run_generate_world(
     world_name = safe_identifier(world_name, field='world_name')
     performer_ref = safe_identifier(performer_ref, field='performer_ref')
 
+    # Honour a cancel request before any expensive network I/O. Without this
+    # early check the first DEM download fires before the pipeline ever polls
+    # cancel_flag, so a "cancel before anything runs" request is ignored.
+    _check_cancel()
+
     if foliage_mask_mode == 'worldcover':
         raise NotImplementedError(
             "foliage_mask_mode='worldcover' is reserved for a future ESA "
             "WorldCover integration; use 'rgb-osm' or 'off'."
         )
 
-    # Fuel mode emits <include><uri>model://tree_fuel_<i></uri></include>.
-    # Auto-generate minimal wrappers into <output>/models_fuel/ so the
-    # world is self-contained. spawn_world.launch.py adds that dir to
-    # GZ_SIM_RESOURCE_PATH; if the operator has a richer wrapper pack
-    # earlier on the path (e.g. mesh-backed fuel trees in a bringup
-    # workspace), it takes precedence because write_fuel_wrappers only
-    # writes files that don't already exist.
+    # Fuel mode needs self-contained model://tree_fuel_<i> wrappers written
+    # into <output>/models_fuel/ before any trees are emitted. See
+    # _setup_fuel_wrappers for the GZ_SIM_RESOURCE_PATH / precedence details.
     if foliage_style == 'fuel':
-        models_fuel_dir = os.path.join(os.path.abspath(output_dir), 'models_fuel')
-        written = tree_processor.write_fuel_wrappers(models_fuel_dir)
-        if written:
-            logger.info(
-                f"--foliage-style fuel: wrote {len(written)} wrapper model(s) "
-                f"to {models_fuel_dir} ({', '.join(written)}). Launch will "
-                f"add this dir to GZ_SIM_RESOURCE_PATH."
-            )
-        missing = tree_processor.missing_fuel_wrappers(extra_roots=[models_fuel_dir])
-        if missing:
-            logger.warning(
-                f"--foliage-style fuel: still missing {missing} even after "
-                f"writing defaults; check filesystem permissions on "
-                f"{models_fuel_dir}."
-            )
+        _setup_fuel_wrappers(output_dir)
 
     origin_location = (latitude, longitude)
     # Cache key includes radius — the WGS84 bbox depends on it, and a cache
@@ -150,16 +218,16 @@ def run_generate_world(
     # another. The :.1f format keeps fractional radii distinct (radius=1500
     # vs 1500.5 used to collide on int(radius)). Bumping the key format
     # implicitly invalidates pre-existing caches with the old `r{int}` shape.
-    location_name = f"loc_{latitude:.4f}_{longitude:.4f}_r{radius:.1f}"
+    location_name = f'loc_{latitude:.4f}_{longitude:.4f}_r{radius:.1f}'
     output_dir = os.path.abspath(output_dir)
 
-    dem_cache_path = os.path.join(config.DEM_CACHE_DIR, f"{location_name}_dem.tif")
-    dem_utm_cache_path = os.path.join(config.DEM_CACHE_DIR, f"{location_name}_dem_utm.tif")
-    buildings_cache_path = os.path.join(config.OSM_CACHE_DIR, f"{location_name}_buildings.geojson")
-    trees_cache_path = os.path.join(config.OSM_CACHE_DIR, f"{location_name}_foliage.geojson")
-    roads_cache_path = os.path.join(config.OSM_CACHE_DIR, f"{location_name}_roads.geojson")
-    parking_cache_path = os.path.join(config.OSM_CACHE_DIR, f"{location_name}_parking.geojson")
-    texture_cache_dir = os.path.join(config.TEXTURE_CACHE_DIR, f"{location_name}_texture")
+    dem_cache_path = os.path.join(config.DEM_CACHE_DIR, f'{location_name}_dem.tif')
+    dem_utm_cache_path = os.path.join(config.DEM_CACHE_DIR, f'{location_name}_dem_utm.tif')
+    buildings_cache_path = os.path.join(config.OSM_CACHE_DIR, f'{location_name}_buildings.geojson')
+    trees_cache_path = os.path.join(config.OSM_CACHE_DIR, f'{location_name}_foliage.geojson')
+    roads_cache_path = os.path.join(config.OSM_CACHE_DIR, f'{location_name}_roads.geojson')
+    parking_cache_path = os.path.join(config.OSM_CACHE_DIR, f'{location_name}_parking.geojson')
+    texture_cache_dir = os.path.join(config.TEXTURE_CACHE_DIR, f'{location_name}_texture')
     os.makedirs(texture_cache_dir, exist_ok=True)
 
     # User-supplied DEM / orthophoto override the cache-fetch paths. Both must
@@ -170,16 +238,16 @@ def run_generate_world(
     if dem_file is not None:
         dem_source_path = os.path.abspath(dem_file)
         if not os.path.isfile(dem_source_path):
-            raise click.UsageError(f"--dem-file does not exist: {dem_source_path}")
-        _log(f"Using user-supplied DEM: {dem_source_path}")
+            raise click.UsageError(f'--dem-file does not exist: {dem_source_path}')
+        _log(f'Using user-supplied DEM: {dem_source_path}')
     else:
         dem_source_path = dem_cache_path
-        _log("Downloading SRTM3 DEM...")
+        _log('Downloading SRTM3 DEM...')
         _pct(5)
         elevation.download_dem(origin_location, radius, dem_cache_path)
     _check_cancel()
 
-    _log("Downloading OSM layers...")
+    _log('Downloading OSM layers...')
     _pct(15)
     # Each layer is its own Overpass round-trip; without per-call cancel
     # checks the user has to wait through all four (10-30s on slow days)
@@ -205,11 +273,11 @@ def run_generate_world(
     if texture_file is not None:
         texture_user_path = os.path.abspath(texture_file)
         if not os.path.isfile(texture_user_path):
-            raise click.UsageError(f"--texture-file does not exist: {texture_user_path}")
-        _log(f"Using user-supplied orthophoto: {texture_user_path}")
+            raise click.UsageError(f'--texture-file does not exist: {texture_user_path}')
+        _log(f'Using user-supplied orthophoto: {texture_user_path}')
     else:
         _check_cancel()
-        _log("Downloading satellite tiles...")
+        _log('Downloading satellite tiles...')
         _pct(25)
         textures.download_satellite_texture_tiles(
             origin_location, radius, texture_cache_dir,
@@ -226,7 +294,7 @@ def run_generate_world(
     # DEM reprojection uses the same converter created above, so both the
     # texture and DEM share a single UTM zone.
     _check_cancel()
-    _log("Reprojecting DEM into local UTM grid...")
+    _log('Reprojecting DEM into local UTM grid...')
     _pct(55)
     target_size = _choose_heightmap_size(dem_source_path, max_size=max_heightmap_size)
     elevation.reproject_dem_to_utm(
@@ -253,51 +321,15 @@ def run_generate_world(
 
     heightmap_output_path = os.path.join(output_media_dir, 'heightmap.png')
 
-    # TWO distinct texture paths, deliberately kept separate:
-    #
-    #   texture_source_path (always PNG / user's raw orthophoto)
-    #     The LOSSLESS image every mask + analysis step reads —
-    #     cloud_mask, foliage_mask, tree_processor's legacy EXG
-    #     vegetation scatter. JPEG compression blurs low-contrast
-    #     EXG thresholds (2*G - R - B) and biases cloud-mask HLS
-    #     saturation, so these stages MUST NOT read the compressed
-    #     render texture. If the user supplied --texture-file, we take
-    #     their file as-is (they chose its quality); otherwise we
-    #     produce a PNG cache of the downloaded mosaic.
-    #
-    #   texture_output_path (JPEG by default, PNG optional)
-    #     The RENDER-ONLY asset baked into the world SDF as the
-    #     heightmap <diffuse>. Gazebo decodes this once at world load
-    #     and uploads to the GPU; JPEG is ~5x smaller + faster on
-    #     smooth satellite imagery. Nothing in the mask pipeline
-    #     touches this file.
-    #
-    if texture_file is not None:
-        texture_source_path = os.path.abspath(texture_file)
-    else:
-        texture_source_path = os.path.join(texture_cache_dir, 'satellite_texture.png')
-
-    _texfmt = (texture_format or 'jpeg').lower()
-    if _texfmt not in ('png', 'jpeg', 'jpg'):
-        raise ValueError(f"Unsupported texture_format={texture_format!r}; "
-                         f"expected 'png' or 'jpeg'.")
-    _texext = 'png' if _texfmt == 'png' else 'jpg'
-    texture_output_path = os.path.join(
-        output_textures_dir, f'satellite_texture.{_texext}'
+    # Resolve the lossless mask source vs the render-only output texture.
+    # See _resolve_texture_paths for why these are kept strictly separate
+    # and the alias safety rail.
+    texture_source_path, texture_output_path, _texext = _resolve_texture_paths(
+        output_textures_dir, texture_file, texture_cache_dir, texture_format,
     )
-    # Safety rail: the two paths must never alias. If a future change
-    # accidentally routes the render output back into the mask source
-    # (or vice-versa), blow up now rather than silently letting JPEG
-    # artefacts bias EXG / HLS thresholds.
-    if os.path.abspath(texture_source_path) == os.path.abspath(texture_output_path):
-        raise AssertionError(
-            f"texture_source_path and texture_output_path alias the same "
-            f"file ({texture_source_path}); masks must read the lossless "
-            f"source, not the render-only output."
-        )
 
     _check_cancel()
-    _log("Processing DEM into heightmap...")
+    _log('Processing DEM into heightmap...')
     _pct(65)
     dem_stats = elevation_processor.process_dem_to_heightmap(
         dem_utm_cache_path, heightmap_output_path
@@ -308,7 +340,7 @@ def run_generate_world(
     if height_amplitude is None or height_amplitude <= 0:
         height_amplitude = dem_range
         _log(
-            f"Auto height_amplitude = {height_amplitude:.2f} m "
+            f'Auto height_amplitude = {height_amplitude:.2f} m '
             f"(DEM relief: {dem_stats['min']:.1f}-{dem_stats['max']:.1f})"
         )
 
@@ -360,9 +392,9 @@ def run_generate_world(
             # operator has no way to tell the texture file was unreadable
             # vs. some morphology stage tripped.
             logger.warning(
-                f"Could not probe texture {texture_source_path} for "
-                f"meters-per-pixel ({type(e).__name__}: {e}); "
-                f"masks will be skipped."
+                f'Could not probe texture {texture_source_path} for '
+                f'meters-per-pixel ({type(e).__name__}: {e}); '
+                f'masks will be skipped.'
             )
             texture_available = False
 
@@ -389,7 +421,7 @@ def run_generate_world(
         )
 
     _check_cancel()
-    _log("Building Gazebo models from OSM footprints...")
+    _log('Building Gazebo models from OSM footprints...')
     _pct(75)
     buildings = building_processor.process_osm_buildings_to_sdf(
         buildings_cache_path, output_models_dir, origin_location,
@@ -397,7 +429,7 @@ def run_generate_world(
         cloud_mask=cloud_mask,
     )
     _check_cancel()
-    _log("Scattering trees from OSM foliage + vegetation mask...")
+    _log('Scattering trees from OSM foliage + vegetation mask...')
     _pct(85)
     trees = tree_processor.process_osm_trees_to_sdf(
         trees_cache_path, output_models_dir, origin_location,
@@ -418,7 +450,7 @@ def run_generate_world(
     )
     if with_roads:
         _check_cancel()
-        _log("Laying down roads from OSM highways...")
+        _log('Laying down roads from OSM highways...')
         _pct(90)
         roads = road_processor.process_osm_roads_to_sdf(
             roads_cache_path, output_models_dir, origin_location,
@@ -435,7 +467,7 @@ def run_generate_world(
     # existing world SDFs + downstream packaging continue to resolve.
     flat_normal_output_path = os.path.join(output_textures_dir, 'flat_normal.png')
     if os.path.exists(texture_source_path):
-        _log(f"Copying orthophoto / satellite texture as {_texext.upper()}...")
+        _log(f'Copying orthophoto / satellite texture as {_texext.upper()}...')
         os.makedirs(os.path.dirname(texture_output_path), exist_ok=True)
         if _texext == 'png':
             shutil.copy2(texture_source_path, texture_output_path)
@@ -472,15 +504,17 @@ def run_generate_world(
         foliage_mask.save_debug_png(os.path.join(output_media_dir, 'foliage_mask.png'))
 
     _check_cancel()
-    _log("Rendering SDF world...")
+    _log('Rendering SDF world...')
     _pct(95)
     builder = sdf_builder.SDFWorldBuilder(TEMPLATE_DIR)
     extent_meters = 2.0 * radius
-    output_sdf_world_path = os.path.join(output_dir, f"{world_name}.world")
+    output_sdf_world_path = os.path.join(output_dir, f'{world_name}.world')
     sdf_content = builder.render_world_template(
         heightmap_path=heightmap_output_path if os.path.exists(heightmap_output_path) else None,
         texture_path=texture_output_path if os.path.exists(texture_output_path) else None,
-        flat_normal_path=flat_normal_output_path if os.path.exists(flat_normal_output_path) else None,
+        flat_normal_path=(
+            flat_normal_output_path
+            if os.path.exists(flat_normal_output_path) else None),
         buildings=buildings,
         trees=trees,
         roads=roads,
@@ -501,8 +535,8 @@ def run_generate_world(
     builder.save_sdf_world_file(sdf_content, output_sdf_world_path)
 
     _log(
-        f"World saved to {output_sdf_world_path}. Launch with: "
-        f"ros2 launch terraforge_gazebo spawn_world.launch.py world:={output_sdf_world_path}"
+        f'World saved to {output_sdf_world_path}. Launch with: '
+        f'ros2 launch terraforge_gazebo spawn_world.launch.py world:={output_sdf_world_path}'
     )
     return output_sdf_world_path
 
@@ -515,7 +549,7 @@ def cli(ctx, debug):
     ctx.obj['DEBUG'] = debug
     logger.setLevel(logging.DEBUG if debug else logging.INFO)
     if debug:
-        logger.debug("Debug logging enabled.")
+        logger.debug('Debug logging enabled.')
 
 
 @cli.command('generate-world')
@@ -530,7 +564,8 @@ def cli(ctx, debug):
                    '--side-length for new usage.')
 @click.option('--output-dir', default='generated_world', type=click.Path(),
               help='Output directory for the generated world.')
-@click.option('--world-name', default='generated_world', help='Name of the generated Gazebo world.')
+@click.option('--world-name', default='generated_world',
+              help='Name of the generated Gazebo world.')
 @click.option('--height-amplitude', default=None, type=float,
               help='Vertical range (m) mapped to the full heightmap dynamic range. '
                    'Auto-detected from the DEM elevation range if unset.')
@@ -539,7 +574,8 @@ def cli(ctx, debug):
               default=None,
               help='Satellite tile source. Defaults to $SATELLITE_TEXTURE_SOURCE or "mapbox".')
 @click.option('--tile-api-key', default=None,
-              help='API key for the selected tile provider (overrides the provider-specific env var).')
+              help='API key for the selected tile provider '
+                   '(overrides the provider-specific env var).')
 @click.option('--zoom', 'tile_zoom', type=int, default=None,
               help='Force satellite tile zoom level (clamped to provider.max_zoom). '
                    'Without this, the pipeline picks the highest zoom that fits --max-tiles. '
@@ -550,7 +586,7 @@ def cli(ctx, debug):
                    'until the count fits. Raise if you want a 3 km+ world at zoom 19; '
                    'lower if the tile server rate-limits.')
 @click.option('--max-texture-size', 'max_texture_px', type=int, default=None,
-              help='Cap on the saved satellite texture\'s larger dimension in pixels '
+              help="Cap on the saved satellite texture's larger dimension in pixels "
                    f'(default {textures.DEFAULT_MAX_TEXTURE_PX}). Mosaics exceeding this '
                    'are downsampled (LANCZOS) before save. Prevents Gazebo OOM on '
                    '≤4 GB VRAM GPUs and keeps world-load time bounded. Raise to preserve '
@@ -567,7 +603,8 @@ def cli(ctx, debug):
                    'via --texture-file).')
 @click.option('--with-roads/--no-roads', default=False,
               help='Emit OSM highway ways as flat road strips. Off by default — '
-                   'current implementation is flat-per-segment and floats over undulating terrain.')
+                   'current implementation is flat-per-segment and floats '
+                   'over undulating terrain.')
 @click.option('--cloud-filter/--no-cloud-filter', default=True,
               help='Drop buildings/trees whose satellite pixel looks like cloud '
                    '(high luminance + low saturation). On by default.')
@@ -636,15 +673,15 @@ def generate_world(ctx, latitude, longitude, side_length, radius, output_dir,
     half-extent meters; the conversion is just ``radius = side_length / 2``.
     """
     if side_length is None and radius is None:
-        raise click.UsageError("Provide --side-length or --radius.")
+        raise click.UsageError('Provide --side-length or --radius.')
     if side_length is not None and radius is not None:
-        raise click.UsageError("Use --side-length or --radius, not both.")
+        raise click.UsageError('Use --side-length or --radius, not both.')
     if side_length is not None:
         radius = side_length / 2.0
     if max_heightmap_size not in elevation_processor.OGRE2_VALID_SIZES:
         raise click.UsageError(
-            f"--max-heightmap-size must be one of "
-            f"{elevation_processor.OGRE2_VALID_SIZES}; got {max_heightmap_size}."
+            f'--max-heightmap-size must be one of '
+            f'{elevation_processor.OGRE2_VALID_SIZES}; got {max_heightmap_size}.'
         )
     try:
         world_name = safe_identifier(world_name, field='--world-name')
@@ -657,23 +694,23 @@ def generate_world(ctx, latitude, longitude, side_length, radius, output_dir,
     # corrupt or unreadable file.
     if dem_file is not None:
         if not os.path.isfile(dem_file):
-            raise click.UsageError(f"--dem-file does not exist: {dem_file}")
+            raise click.UsageError(f'--dem-file does not exist: {dem_file}')
         ds = gdal.Open(os.path.abspath(dem_file))
         if ds is None:
             raise click.UsageError(
-                f"--dem-file is not a GDAL-readable raster: {dem_file}"
+                f'--dem-file is not a GDAL-readable raster: {dem_file}'
             )
         ds = None
     if texture_file is not None:
         if not os.path.isfile(texture_file):
-            raise click.UsageError(f"--texture-file does not exist: {texture_file}")
+            raise click.UsageError(f'--texture-file does not exist: {texture_file}')
         try:
             with Image.open(os.path.abspath(texture_file)) as img:
                 img.verify()
         except Exception as e:
             raise click.UsageError(
-                f"--texture-file is not a readable image ({type(e).__name__}: {e}): "
-                f"{texture_file}"
+                f'--texture-file is not a readable image ({type(e).__name__}: {e}): '
+                f'{texture_file}'
             )
 
     # --foliage-mask worldcover is reserved but not yet implemented. Fail
@@ -681,8 +718,8 @@ def generate_world(ctx, latitude, longitude, side_length, radius, output_dir,
     # pipeline only to raise from inside run_generate_world.
     if foliage_mask_mode.lower() == 'worldcover':
         raise click.UsageError(
-            "--foliage-mask worldcover is reserved for a future ESA WorldCover "
-            "10 m tree-cover integration and is not yet implemented. Use "
+            '--foliage-mask worldcover is reserved for a future ESA WorldCover '
+            '10 m tree-cover integration and is not yet implemented. Use '
             "'rgb-osm' (default) or 'off'."
         )
 
@@ -711,7 +748,7 @@ def generate_world(ctx, latitude, longitude, side_length, radius, output_dir,
             texture_format=texture_format.lower(),
         )
     except Exception as e:
-        logger.error(f"World generation failed: {e}")
+        logger.error(f'World generation failed: {e}')
         if ctx.obj['DEBUG']:
             raise
         ctx.exit(1)
@@ -722,8 +759,8 @@ def list_tile_providers():
     """List available satellite tile providers and their attribution requirements."""
     for name in sorted(textures.PROVIDERS.keys()):
         p = textures.PROVIDERS[name]
-        key_tag = "key required" if p.requires_key else "no key"
-        click.echo(f"{name:18}  max_zoom={p.max_zoom:<2}  [{key_tag}]  {p.attribution}")
+        key_tag = 'key required' if p.requires_key else 'no key'
+        click.echo(f'{name:18}  max_zoom={p.max_zoom:<2}  [{key_tag}]  {p.attribution}')
 
 
 if __name__ == '__main__':

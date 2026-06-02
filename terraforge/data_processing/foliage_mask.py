@@ -1,3 +1,6 @@
+# Copyright 2024 TerraForge Contributors
+#
+# Licensed under the MIT License.
 """Raster foliage mask for the image-based tree-scatter path.
 
 This is the FoliageMask analogue of cloud_mask.CloudMask. Where CloudMask
@@ -45,15 +48,15 @@ import os
 from typing import Optional
 
 import numpy as np
+from PIL import Image, ImageDraw, ImageFilter
 import shapely.geometry
 import shapely.ops
-from PIL import Image, ImageDraw, ImageFilter
 
 from terraforge.utils.logging import logger
 from terraforge.utils.morphology import geodesic_dilate, open_u8
 from terraforge.utils.osm_roads import (
-    NARROW_ROAD_CLASSES,
     half_width_for_props,
+    NARROW_ROAD_CLASSES,
 )
 
 # Two-stage canopy thresholds. The strict trio (EXG + sigma + L cap) picks
@@ -153,7 +156,8 @@ def _rasterize_polygons(polys_gazebo, image_size_px, world_half_extent_m,
                 poly = poly.buffer(dilate_m, resolution=2)
             except Exception:
                 pass
-        geoms = [poly] if isinstance(poly, shapely.geometry.Polygon) else list(getattr(poly, 'geoms', [poly]))
+        geoms = ([poly] if isinstance(poly, shapely.geometry.Polygon)
+                 else list(getattr(poly, 'geoms', [poly])))
         for g in geoms:
             if not isinstance(g, shapely.geometry.Polygon) or g.is_empty:
                 continue
@@ -186,7 +190,7 @@ def _load_polygons_gazebo(geojson_path: str, converter, world_box,
         with open(geojson_path, encoding='utf-8') as f:
             data = json.load(f)
     except Exception as e:
-        logger.warning(f"Foliage mask: could not load {geojson_path}: {e}")
+        logger.warning(f'Foliage mask: could not load {geojson_path}: {e}')
         return []
 
     polys = []
@@ -239,7 +243,7 @@ def _rasterize_road_buffers(roads_geojson_path: str, converter, world_box,
         with open(roads_geojson_path, encoding='utf-8') as f:
             data = json.load(f)
     except Exception as e:
-        logger.warning(f"Foliage mask: could not load roads {roads_geojson_path}: {e}")
+        logger.warning(f'Foliage mask: could not load roads {roads_geojson_path}: {e}')
         return np.zeros((image_size_px[1], image_size_px[0]), dtype=bool)
 
     buffered = []
@@ -285,7 +289,7 @@ class FoliageMask:
     def __init__(self, mask_array: np.ndarray, bbox_wgs84: tuple,
                  world_half_extent_m: float):
         if mask_array.ndim != 2:
-            raise ValueError(f"mask must be 2D, got shape {mask_array.shape}")
+            raise ValueError(f'mask must be 2D, got shape {mask_array.shape}')
         self._mask = mask_array.astype(bool)
         self._bbox = bbox_wgs84
         self._half_extent_m = float(world_half_extent_m)
@@ -334,12 +338,12 @@ class FoliageMask:
         """
         if meters_per_pixel is None or meters_per_pixel <= 0:
             raise ValueError(
-                "meters_per_pixel is required and must be positive; "
-                "running foliage-mask sigma + morphology at native "
-                "resolution would blow up memory on z18+ inputs."
+                'meters_per_pixel is required and must be positive; '
+                'running foliage-mask sigma + morphology at native '
+                'resolution would blow up memory on z18+ inputs.'
             )
 
-        img = Image.open(image_path).convert("RGB")
+        img = Image.open(image_path).convert('RGB')
         native_w, native_h = img.size
 
         rgb_native = np.asarray(img, dtype=np.float32) / 255.0
@@ -360,9 +364,9 @@ class FoliageMask:
             new_w = max(2, int(round(native_w / factor)))
             new_h = max(2, int(round(native_h / factor)))
             logger.info(
-                f"Foliage mask: downsampling {native_w}x{native_h} "
-                f"({meters_per_pixel:.3f} m/px) -> {new_w}x{new_h} "
-                f"(~{target_mpp:.1f} m/px) for morphology"
+                f'Foliage mask: downsampling {native_w}x{native_h} '
+                f'({meters_per_pixel:.3f} m/px) -> {new_w}x{new_h} '
+                f'(~{target_mpp:.1f} m/px) for morphology'
             )
             img = img.resize((new_w, new_h), Image.BILINEAR)
             # Max-pool sigma by taking block-maxes. Pillow doesn't ship a
@@ -469,18 +473,18 @@ class FoliageMask:
 
         instance = cls(combined, bbox_wgs84, world_half_extent_m)
         logger.info(
-            f"Foliage mask built from {image_path}: "
-            f"EXG p50/p90/p99 = {e50:.3f}/{e90:.3f}/{e99:.3f}, "
-            f"L p50/p90/p99 = {l50:.3f}/{l90:.3f}/{l99:.3f}, "
-            f"sigma p50/p90/p99 = {s50:.3f}/{s90:.3f}/{s99:.3f}. "
-            f"Pipeline: strict={strict_fraction:.1%} (EXG>={exg_strict}, "
-            f"sigma>={sigma_strict}, L<={l_max_strict}) -> "
-            f"{seed_fraction:.1%} after seed-open({opening_px}px) -> "
-            f"{grown_fraction:.1%} after geodesic "
-            f"(into loose {loose_fraction:.1%}, {iters} iters) + "
-            f"{positive_osm_fraction:.1%} OSM positive - "
-            f"{negative_fraction:.1%} negative (roads/parking/buildings) -> "
-            f"{instance.foliage_fraction:.1%} placeable."
+            f'Foliage mask built from {image_path}: '
+            f'EXG p50/p90/p99 = {e50:.3f}/{e90:.3f}/{e99:.3f}, '
+            f'L p50/p90/p99 = {l50:.3f}/{l90:.3f}/{l99:.3f}, '
+            f'sigma p50/p90/p99 = {s50:.3f}/{s90:.3f}/{s99:.3f}. '
+            f'Pipeline: strict={strict_fraction:.1%} (EXG>={exg_strict}, '
+            f'sigma>={sigma_strict}, L<={l_max_strict}) -> '
+            f'{seed_fraction:.1%} after seed-open({opening_px}px) -> '
+            f'{grown_fraction:.1%} after geodesic '
+            f'(into loose {loose_fraction:.1%}, {iters} iters) + '
+            f'{positive_osm_fraction:.1%} OSM positive - '
+            f'{negative_fraction:.1%} negative (roads/parking/buildings) -> '
+            f'{instance.foliage_fraction:.1%} placeable.'
         )
         return instance
 
@@ -510,8 +514,8 @@ class FoliageMask:
         """
         if abs(world_half_extent_m - self._half_extent_m) > 1e-3:
             raise ValueError(
-                f"FoliageMask.sample_grid extent mismatch: mask built for "
-                f"{self._half_extent_m} m, caller asked for {world_half_extent_m} m"
+                f'FoliageMask.sample_grid extent mismatch: mask built for '
+                f'{self._half_extent_m} m, caller asked for {world_half_extent_m} m'
             )
         if target_w == self.width and target_h == self.height:
             return self._mask.copy()
@@ -527,10 +531,12 @@ class FoliageMask:
 def build_foliage_mask(
     image_path: str, bbox_wgs84: tuple, **kwargs
 ) -> Optional[FoliageMask]:
-    """Convenience wrapper — returns None if the mask can't be built so
-    callers can gracefully continue without foliage filtering."""
+    """Build a FoliageMask, returning None if the mask can't be built.
+
+    Lets callers gracefully continue without foliage filtering.
+    """
     try:
         return FoliageMask.from_image_and_vectors(image_path, bbox_wgs84, **kwargs)
     except Exception as e:
-        logger.warning(f"Foliage mask unavailable ({e}); continuing without filtering")
+        logger.warning(f'Foliage mask unavailable ({e}); continuing without filtering')
         return None

@@ -19,6 +19,10 @@ jobs:
       - name: Install apt dependencies
         run: |
           apt-get update
+          # ros:jazzy-ros-base ships without pip; install it before the
+          # pip step below (otherwise `python3 -m pip` fails with
+          # "No module named pip").
+          apt-get install -y python3-pip
           rosdep update
           rosdep install --from-paths src --ignore-src -y \
               || apt-get install -y python3-gdal python3-pyqt6

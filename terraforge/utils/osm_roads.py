@@ -1,5 +1,9 @@
-"""OSM ``highway=*`` width tables and parser, shared between road_processor
-and foliage_mask.
+# Copyright 2024 TerraForge Contributors
+#
+# Licensed under the MIT License.
+"""OSM ``highway=*`` width tables and parser.
+
+Shared between road_processor and foliage_mask.
 
 Both modules need to know the half-width of an OSM road by class (and how
 to interpret an explicit ``width`` tag) — road_processor for SDF emission,
@@ -7,7 +11,6 @@ foliage_mask for the negative road-buffer that excludes scatter trees from
 asphalt. Keeping the table in one place avoids the two files drifting
 when a new highway class is added.
 """
-
 
 # Per-highway-class half-width (metres). Road total width = 2 * entry.
 ROAD_HALF_WIDTH = {

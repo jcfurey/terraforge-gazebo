@@ -1,3 +1,6 @@
+# Copyright 2024 TerraForge Contributors
+#
+# Licensed under the MIT License.
 from setuptools import find_packages, setup
 
 package_name = 'terraforge_gazebo'
@@ -18,18 +21,22 @@ setup(
     ],
     install_requires=[
         'setuptools',
-        'click>=8.0',
-        'elevation>=1.1',
-        'geocoder>=1.38',
-        'Jinja2>=3.0',
-        'osmnx>=2.0',
+        'click>=8.0,<9',
+        'elevation>=1.1,<2',
+        'Jinja2>=3.0,<4',
+        'osmnx>=2.0,<3',
         'Pillow>=10.0,<13',
-        'pyproj>=3.6',
-        'requests>=2.31',
-        'shapely>=2.0',
+        'pyproj>=3.6,<4',
+        'requests>=2.31,<3',
+        'shapely>=2.0,<3',
     ],
     extras_require={
-        'gui': ['PyQt6>=6.6'],
+        'gui': ['PyQt6>=6.6,<7'],
+        # geocoder + PyQt6 are needed only by the experimental interactive
+        # map widget (experimental/ui/map/), which is excluded from the
+        # installed package (see find_packages above). Kept out of the core
+        # deps so headless CLI installs stay lean.
+        'experimental': ['geocoder>=1.38,<2', 'PyQt6>=6.6,<7'],
     },
     zip_safe=True,
     maintainer='TerraForge Contributors',

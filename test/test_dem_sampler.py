@@ -15,7 +15,7 @@ import pytest
 pytest.importorskip('osgeo')
 pytest.importorskip('numpy')
 
-import numpy as np  # noqa: E402
+import numpy as np  # noqa: E402,I100,I202
 from osgeo import gdal, osr  # noqa: E402
 
 from terraforge.data_processing.elevation_processor import (  # noqa: E402

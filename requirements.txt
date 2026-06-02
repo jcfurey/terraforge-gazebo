@@ -1,6 +1,8 @@
 click>=8.0,<9
 elevation>=1.1,<2
-geocoder>=1.38
+# geocoder is NOT a core dependency: it's used only by the experimental
+# interactive map widget (experimental/ui/map/), which ships outside the
+# installed package. Install it on demand with `pip install .[experimental]`.
 # GDAL is intentionally unpinned here. `pip install GDAL` needs matching
 # libgdal-dev headers and is fragile; prefer rosdep-resolved python3-gdal
 # (ROS 2 Jazzy) or conda-forge `gdal`. If pip-installing, match your
@@ -8,7 +10,7 @@ geocoder>=1.38
 GDAL
 Jinja2>=3.0,<4
 osmnx>=2.0,<3
-Pillow>=10.0,<12
+Pillow>=10.0,<13
 PyQt6>=6.6,<7
 pyproj>=3.6,<4
 requests>=2.31,<3

@@ -1,3 +1,6 @@
+# Copyright 2024 TerraForge Contributors
+#
+# Licensed under the MIT License.
 """Turn OSM ``highway=*`` LineStrings into Gazebo road models.
 
 Each OSM way becomes one static model. The way's polyline is buffered by its
@@ -37,8 +40,9 @@ def _sanitize(name):
 
 
 def _polygon_to_body_sdf(polygon, name_prefix, pose_xyz, thickness, color=ROAD_COLOR) -> str:
-    """Return a visual-only `<visual>` fragment for a road segment, with
-    the segment pose baked in and the element name uniquified via
+    """Return a `<visual>`-only fragment for a road segment.
+
+    The segment pose is baked in and the element name uniquified via
     ``name_prefix``. Designed to live inside the shared per-tile
     ``<link>`` alongside buildings — one link per tile instead of one
     link per road segment slashes entity count at load.
@@ -54,24 +58,24 @@ def _polygon_to_body_sdf(polygon, name_prefix, pose_xyz, thickness, color=ROAD_C
     coords = list(polygon.exterior.coords)
     if coords[0] == coords[-1]:
         coords = coords[:-1]
-    pts = "\n            ".join(f"<point>{x:.3f} {y:.3f}</point>" for x, y in coords)
+    pts = '\n            '.join(f'<point>{x:.3f} {y:.3f}</point>' for x, y in coords)
     r, g, b = color
     px, py, pz = pose_xyz
     return (
         f"      <visual name='vis_{name_prefix}'>\n"
-        f"        <pose>{px:.3f} {py:.3f} {pz:.3f} 0 0 0</pose>\n"
-        f"        <geometry>\n"
-        f"          <polyline>\n"
-        f"            {pts}\n"
-        f"            <height>{thickness:.3f}</height>\n"
-        f"          </polyline>\n"
-        f"        </geometry>\n"
-        f"        <material>\n"
-        f"          <ambient>{r} {g} {b} 1</ambient>\n"
-        f"          <diffuse>{r} {g} {b} 1</diffuse>\n"
-        f"          <specular>0.05 0.05 0.05 1</specular>\n"
-        f"        </material>\n"
-        f"      </visual>"
+        f'        <pose>{px:.3f} {py:.3f} {pz:.3f} 0 0 0</pose>\n'
+        f'        <geometry>\n'
+        f'          <polyline>\n'
+        f'            {pts}\n'
+        f'            <height>{thickness:.3f}</height>\n'
+        f'          </polyline>\n'
+        f'        </geometry>\n'
+        f'        <material>\n'
+        f'          <ambient>{r} {g} {b} 1</ambient>\n'
+        f'          <diffuse>{r} {g} {b} 1</diffuse>\n'
+        f'          <specular>0.05 0.05 0.05 1</specular>\n'
+        f'        </material>\n'
+        f'      </visual>'
     )
 
 
@@ -83,10 +87,10 @@ def process_osm_roads_to_sdf(osm_filepath: str, models_dir: str, origin_wgs84: t
     geometries in the GeoJSON (e.g. crossing markers) are skipped.
     """
     if not os.path.exists(osm_filepath):
-        logger.info("No OSM roads file; skipping roads stage.")
+        logger.info('No OSM roads file; skipping roads stage.')
         return []
 
-    logger.info(f"Processing OSM roads from {osm_filepath} to models in {models_dir}")
+    logger.info(f'Processing OSM roads from {osm_filepath} to models in {models_dir}')
     os.makedirs(models_dir, exist_ok=True)
 
     converter = CoordinateConverter(origin_wgs84)
@@ -117,8 +121,8 @@ def process_osm_roads_to_sdf(osm_filepath: str, models_dir: str, origin_wgs84: t
                 continue
 
             half_w = half_width_for_props(props)
-            road_id = props.get('osmid', f"{feature_idx}")
-            base_name = f"road_{_sanitize(road_id)}_{feature_idx}"
+            road_id = props.get('osmid', f'{feature_idx}')
+            base_name = f'road_{_sanitize(road_id)}_{feature_idx}'
 
             # MultiLineString: iterate component lines; each becomes its own
             # segment chain below.
@@ -140,20 +144,22 @@ def process_osm_roads_to_sdf(osm_filepath: str, models_dir: str, origin_wgs84: t
             # Per-feature defence: a single corrupt OSM way shouldn't kill
             # the rest of the road processing pass.
             feature_errors += 1
-            logger.debug(f"Skipping road feature {feature_idx}: {e}")
+            logger.debug(f'Skipping road feature {feature_idx}: {e}')
             continue
 
     logger.info(
-        f"OSM roads processed: {len(placements)} road models, "
-        f"{skipped} skipped, {feature_errors} on feature errors"
+        f'OSM roads processed: {len(placements)} road models, '
+        f'{skipped} skipped, {feature_errors} on feature errors'
     )
     return placements
 
 
 def _emit_road_segments(line_local, half_w, base_name, comp_idx,
                         elevation_sampler=None):
-    """Break ``line_local`` into chunks of <= _ROAD_SEGMENT_MAX_LEN_M and
-    produce one inline-link placement per chunk, sampling elevation at each
+    """Break ``line_local`` into short, DEM-following slab segments.
+
+    Each chunk is <= _ROAD_SEGMENT_MAX_LEN_M and becomes one inline-link
+    placement, sampling elevation at each
     chunk's midpoint so the sequence of slabs follows the DEM instead of
     producing one long horizontal plank. Placements carry ``link_sdf`` so
     ``sdf_builder.build_scene_tiles`` groups them into per-tile compound
@@ -204,7 +210,7 @@ def _emit_road_segments(line_local, half_w, base_name, comp_idx,
         else:
             pose_z = ROAD_THICKNESS / 2.0
 
-        link_name = f"{base_name}_c{comp_idx}_s{seg_idx}"
+        link_name = f'{base_name}_c{comp_idx}_s{seg_idx}'
         body_sdf = _polygon_to_body_sdf(
             poly_centered, link_name, (pose_xy[0], pose_xy[1], pose_z),
             ROAD_THICKNESS,
@@ -223,9 +229,10 @@ def _emit_road_segments(line_local, half_w, base_name, comp_idx,
 
 
 def _subline_points(line, t0, t1):
-    """Return the vertex sequence of ``line`` restricted to the parametric
-    range [t0, t1] (normalized), keeping any original OSM vertices that
-    fall strictly inside so the sub-line preserves curvature.
+    """Return the vertex sequence of ``line`` over a parametric sub-range.
+
+    Restricted to the range [t0, t1] (normalized), keeping any original OSM
+    vertices that fall strictly inside so the sub-line preserves curvature.
     """
     pts = [line.interpolate(t0, normalized=True)]
     total = line.length

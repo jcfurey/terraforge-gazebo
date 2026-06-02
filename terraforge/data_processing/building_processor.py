@@ -1,7 +1,11 @@
+# Copyright 2024 TerraForge Contributors
+#
+# Licensed under the MIT License.
 
 import json
 import math as _math
 import os
+import random as _random
 
 import shapely.affinity
 import shapely.geometry
@@ -10,8 +14,6 @@ import shapely.ops
 from terraforge.utils.coordinates import CoordinateConverter
 from terraforge.utils.logging import logger
 from terraforge.utils.seeding import stable_seed
-
-import random as _random
 
 DEFAULT_BUILDING_HEIGHT = 6.0  # single-story fallback when no signal exists
 LEVEL_HEIGHT_M = 3.0  # floor-to-floor height used when OSM gives building:levels
@@ -84,7 +86,7 @@ def _area_based_default_height(area_m2: float) -> float:
 
 
 def _infer_height(props: dict, area_m2: float = 0.0,
-                   rng: _random.Random = None) -> float:
+                  rng: _random.Random = None) -> float:
     """Derive a plausible building height from OSM tags, with fallbacks.
 
     Priority:
@@ -119,17 +121,21 @@ def _infer_height(props: dict, area_m2: float = 0.0,
 
 
 def _jitter(h: float, rng: _random.Random) -> float:
-    """Apply up to ±_HEIGHT_JITTER relative jitter. Deterministic given rng."""
+    """Apply up to ±_HEIGHT_JITTER relative jitter.
+
+    Deterministic given rng.
+    """
     if rng is None:
         return h
     return h * (1.0 + rng.uniform(-_HEIGHT_JITTER, _HEIGHT_JITTER))
 
 
 def _polygon_to_polyline_body_sdf(polygon, name_prefix: str, pose_xyz: tuple,
-                                   height: float, color=(0.7, 0.7, 0.7)) -> str:
-    """Return `<collision>` + `<visual>` for a building, with poses baked
-    into each child element and element names made unique via
-    ``name_prefix``.
+                                  height: float, color=(0.7, 0.7, 0.7)) -> str:
+    """Return `<collision>` + `<visual>` SDF for one building.
+
+    Poses are baked into each child element and element names made unique
+    via ``name_prefix``.
 
     Designed to be dropped into a shared `<link>` that holds every static
     body in a tile — collapses hundreds of per-building links (+ fixed
@@ -146,7 +152,7 @@ def _polygon_to_polyline_body_sdf(polygon, name_prefix: str, pose_xyz: tuple,
     coords = list(polygon.exterior.coords)
     if coords[0] == coords[-1]:
         coords = coords[:-1]
-    pts = "\n            ".join(f"<point>{x:.3f} {y:.3f}</point>" for x, y in coords)
+    pts = '\n            '.join(f'<point>{x:.3f} {y:.3f}</point>' for x, y in coords)
 
     minx, miny, maxx, maxy = polygon.bounds
     box_x = max(maxx - minx, 0.1)
@@ -162,32 +168,35 @@ def _polygon_to_polyline_body_sdf(polygon, name_prefix: str, pose_xyz: tuple,
     # the pose via <visual><pose>.
     return (
         f"      <collision name='col_{name_prefix}'>\n"
-        f"        <pose>{px + box_cx:.3f} {py + box_cy:.3f} "
-        f"{pz + height / 2.0:.3f} 0 0 0</pose>\n"
-        f"        <geometry><box><size>{box_x:.3f} {box_y:.3f} "
-        f"{height:.3f}</size></box></geometry>\n"
-        f"      </collision>\n"
+        f'        <pose>{px + box_cx:.3f} {py + box_cy:.3f} '
+        f'{pz + height / 2.0:.3f} 0 0 0</pose>\n'
+        f'        <geometry><box><size>{box_x:.3f} {box_y:.3f} '
+        f'{height:.3f}</size></box></geometry>\n'
+        f'      </collision>\n'
         f"      <visual name='vis_{name_prefix}'>\n"
-        f"        <pose>{px:.3f} {py:.3f} {pz:.3f} 0 0 0</pose>\n"
-        f"        <geometry>\n"
-        f"          <polyline>\n"
-        f"            {pts}\n"
-        f"            <height>{height:.3f}</height>\n"
-        f"          </polyline>\n"
-        f"        </geometry>\n"
-        f"        <material>\n"
-        f"          <ambient>{r} {g} {b} 1</ambient>\n"
-        f"          <diffuse>{r} {g} {b} 1</diffuse>\n"
-        f"          <specular>0.1 0.1 0.1 1</specular>\n"
-        f"        </material>\n"
-        f"      </visual>"
+        f'        <pose>{px:.3f} {py:.3f} {pz:.3f} 0 0 0</pose>\n'
+        f'        <geometry>\n'
+        f'          <polyline>\n'
+        f'            {pts}\n'
+        f'            <height>{height:.3f}</height>\n'
+        f'          </polyline>\n'
+        f'        </geometry>\n'
+        f'        <material>\n'
+        f'          <ambient>{r} {g} {b} 1</ambient>\n'
+        f'          <diffuse>{r} {g} {b} 1</diffuse>\n'
+        f'          <specular>0.1 0.1 0.1 1</specular>\n'
+        f'        </material>\n'
+        f'      </visual>'
     )
 
 
 def _polygon_to_box_body_sdf(polygon, name_prefix: str, pose_xyz: tuple,
-                              height: float, color=(0.7, 0.7, 0.7)) -> str:
-    """Bounding-box fallback body fragment. Used when polyline extrusion
-    isn't viable (multi-polygon exterior, self-intersecting, etc.)."""
+                             height: float, color=(0.7, 0.7, 0.7)) -> str:
+    """Bounding-box fallback body fragment.
+
+    Used when polyline extrusion
+    isn't viable (multi-polygon exterior, self-intersecting, etc.).
+    """
     minx, miny, maxx, maxy = polygon.bounds
     size_x = max(maxx - minx, 0.1)
     size_y = max(maxy - miny, 0.1)
@@ -205,20 +214,20 @@ def _polygon_to_box_body_sdf(polygon, name_prefix: str, pose_xyz: tuple,
     cz = pz + height / 2.0
     return (
         f"      <collision name='col_{name_prefix}'>\n"
-        f"        <pose>{cx_world:.3f} {cy_world:.3f} {cz:.3f} 0 0 0</pose>\n"
-        f"        <geometry><box><size>{size_x:.3f} {size_y:.3f} "
-        f"{height:.3f}</size></box></geometry>\n"
-        f"      </collision>\n"
+        f'        <pose>{cx_world:.3f} {cy_world:.3f} {cz:.3f} 0 0 0</pose>\n'
+        f'        <geometry><box><size>{size_x:.3f} {size_y:.3f} '
+        f'{height:.3f}</size></box></geometry>\n'
+        f'      </collision>\n'
         f"      <visual name='vis_{name_prefix}'>\n"
-        f"        <pose>{cx_world:.3f} {cy_world:.3f} {cz:.3f} 0 0 0</pose>\n"
-        f"        <geometry><box><size>{size_x:.3f} {size_y:.3f} "
-        f"{height:.3f}</size></box></geometry>\n"
-        f"        <material>\n"
-        f"          <ambient>{r} {g} {b} 1</ambient>\n"
-        f"          <diffuse>{r} {g} {b} 1</diffuse>\n"
-        f"          <specular>0.1 0.1 0.1 1</specular>\n"
-        f"        </material>\n"
-        f"      </visual>"
+        f'        <pose>{cx_world:.3f} {cy_world:.3f} {cz:.3f} 0 0 0</pose>\n'
+        f'        <geometry><box><size>{size_x:.3f} {size_y:.3f} '
+        f'{height:.3f}</size></box></geometry>\n'
+        f'        <material>\n'
+        f'          <ambient>{r} {g} {b} 1</ambient>\n'
+        f'          <diffuse>{r} {g} {b} 1</diffuse>\n'
+        f'          <specular>0.1 0.1 0.1 1</specular>\n'
+        f'        </material>\n'
+        f'      </visual>'
     )
 
 
@@ -241,11 +250,12 @@ def _building_color(props: dict) -> tuple:
 
 def process_osm_buildings_to_sdf(osm_filepath: str, models_dir: str, origin_wgs84: tuple,
                                  elevation_sampler=None, cloud_mask=None):
-    """
-    Process OSM building footprints from a GeoJSON file and write one Gazebo
-    model per building under ``models_dir``. The footprint polygon is preserved
-    via SDF ``<polyline>`` when possible; self-intersecting or multipart
-    polygons fall back to an axis-aligned bounding box.
+    """Convert OSM building footprints into per-building Gazebo SDF models.
+
+    Reads ``osm_filepath`` (GeoJSON) and writes one model per building under
+    ``models_dir``. The footprint polygon is preserved via SDF ``<polyline>``
+    when possible; self-intersecting or multipart polygons fall back to an
+    axis-aligned bounding box.
 
     ``elevation_sampler(gx, gy) -> z_meters`` optionally provides terrain Z at
     the building footprint so the model sits on the ground instead of floating
@@ -253,7 +263,7 @@ def process_osm_buildings_to_sdf(osm_filepath: str, models_dir: str, origin_wgs8
 
     Returns ``[{'model_name': str, 'pose_xy': (x, y), 'pose_z': z}, ...]``.
     """
-    logger.info(f"Processing OSM buildings from {osm_filepath} to models in {models_dir}")
+    logger.info(f'Processing OSM buildings from {osm_filepath} to models in {models_dir}')
     os.makedirs(models_dir, exist_ok=True)
 
     converter = CoordinateConverter(origin_wgs84)
@@ -275,7 +285,7 @@ def process_osm_buildings_to_sdf(osm_filepath: str, models_dir: str, origin_wgs8
     # Raise to cull more aggressively (e.g. 50 m² keeps only houses/larger).
     MIN_BUILDING_AREA_M2 = 15.0
     if not os.path.exists(osm_filepath):
-        logger.info("No OSM buildings file; skipping buildings stage.")
+        logger.info('No OSM buildings file; skipping buildings stage.')
         return buildings
     try:
         with open(osm_filepath, 'r', encoding='utf-8') as f:
@@ -296,7 +306,7 @@ def process_osm_buildings_to_sdf(osm_filepath: str, models_dir: str, origin_wgs8
                     continue
 
                 props = feature.get('properties') or {}
-                building_id = props.get('osmid', f"{feature_idx}")
+                building_id = props.get('osmid', f'{feature_idx}')
                 color = _building_color(props)
 
                 polygon_wgs84 = shapely.geometry.shape(geom)
@@ -326,7 +336,7 @@ def process_osm_buildings_to_sdf(osm_filepath: str, models_dir: str, origin_wgs8
                 # used to abort the whole loop via the outer except. Skip
                 # the bad feature and keep going.
                 feature_errors += 1
-                logger.debug(f"Skipping building feature {feature_idx}: {e}")
+                logger.debug(f'Skipping building feature {feature_idx}: {e}')
                 continue
 
             for part_idx, part_wgs84 in enumerate(parts_wgs84):
@@ -376,11 +386,11 @@ def process_osm_buildings_to_sdf(osm_filepath: str, models_dir: str, origin_wgs8
                     # name; for multipart splits add a _pN suffix so link
                     # names stay unique inside a tile compound.
                     if len(parts_wgs84) == 1:
-                        model_name = f"building_{_sanitize(building_id)}_{feature_idx}"
+                        model_name = f'building_{_sanitize(building_id)}_{feature_idx}'
                     else:
                         model_name = (
-                            f"building_{_sanitize(building_id)}_"
-                            f"{feature_idx}_p{part_idx}"
+                            f'building_{_sanitize(building_id)}_'
+                            f'{feature_idx}_p{part_idx}'
                         )
 
                     # Height inference has access to the metric footprint
@@ -411,21 +421,21 @@ def process_osm_buildings_to_sdf(osm_filepath: str, models_dir: str, origin_wgs8
                     # surrounding feature's other parts or any later features.
                     feature_errors += 1
                     logger.debug(
-                        f"Skipping building feature {feature_idx} "
-                        f"part {part_idx}: {e}"
+                        f'Skipping building feature {feature_idx} '
+                        f'part {part_idx}: {e}'
                     )
                     continue
 
         logger.info(
-            f"OSM buildings processed: {len(buildings)} models "
-            f"({polyline_count} polyline, {bbox_fallback} bbox-fallback, "
-            f"{cloud_skipped} cloud-masked, "
-            f"{tiny_skipped} below {MIN_BUILDING_AREA_M2:.0f} m², "
-            f"{invalid_geom_skipped} invalid geometry, "
-            f"{multipart_split} multipart features split, "
-            f"{feature_errors} skipped on feature/part errors)"
+            f'OSM buildings processed: {len(buildings)} models '
+            f'({polyline_count} polyline, {bbox_fallback} bbox-fallback, '
+            f'{cloud_skipped} cloud-masked, '
+            f'{tiny_skipped} below {MIN_BUILDING_AREA_M2:.0f} m², '
+            f'{invalid_geom_skipped} invalid geometry, '
+            f'{multipart_split} multipart features split, '
+            f'{feature_errors} skipped on feature/part errors)'
         )
         return buildings
     except Exception as e:
-        logger.error(f"Error processing OSM buildings to SDF models: {e}")
+        logger.error(f'Error processing OSM buildings to SDF models: {e}')
         raise

@@ -17,9 +17,9 @@ np_skip = pytest.importorskip('numpy')  # noqa: F841 - tree_processor imports nu
 shapely_skip = pytest.importorskip('shapely')  # noqa: F841
 
 from terraforge.data_processing.tree_processor import (  # noqa: E402
-    TREE_VARIANTS,
     fuel_wrapper_model_names,
     missing_fuel_wrappers,
+    TREE_VARIANTS,
     write_fuel_wrappers,
 )
 
