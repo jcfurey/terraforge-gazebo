@@ -19,10 +19,10 @@ def _download(location, radius_meters, tags, output_path, label):
         label=label,
     )
     if gdf.empty:
-        logger.info(f"{label}: 0 features in {radius_meters}m radius")
+        logger.info(f'{label}: 0 features in {radius_meters}m radius')
         return 0
     gdf.to_file(output_path, driver='GeoJSON')
-    logger.info(f"{label}: {len(gdf)} features -> {output_path}")
+    logger.info(f'{label}: {len(gdf)} features -> {output_path}')
     return len(gdf)
 
 
@@ -39,18 +39,18 @@ def download_osm_buildings(location: tuple, radius_meters: float, output_path: s
     upstream.
     """
     logger.info(
-        f"Downloading OSM buildings for location {location} with radius "
-        f"{radius_meters}m to {output_path}"
+        f'Downloading OSM buildings for location {location} with radius '
+        f'{radius_meters}m to {output_path}'
     )
     try:
         return _download(
             location, radius_meters,
-            tags={"building": True},
+            tags={'building': True},
             output_path=output_path,
-            label="OSM buildings",
+            label='OSM buildings',
         )
     except Exception as e:
-        logger.error(f"Failed to download OSM buildings: {e}")
+        logger.error(f'Failed to download OSM buildings: {e}')
         raise
 
 
@@ -75,40 +75,40 @@ def download_osm_trees(location: tuple, radius_meters: float, output_path: str) 
     tree_processor keys on the same tags to pick appropriate densities.
     """
     logger.info(
-        f"Downloading OSM foliage for location {location} with radius "
-        f"{radius_meters}m to {output_path}"
+        f'Downloading OSM foliage for location {location} with radius '
+        f'{radius_meters}m to {output_path}'
     )
     try:
         return _download(
             location, radius_meters,
             tags={
-                "natural": ["tree", "tree_row", "wood", "scrub", "heath"],
-                "landuse": ["forest", "orchard", "vineyard"],
-                "leisure": ["park", "garden"],
+                'natural': ['tree', 'tree_row', 'wood', 'scrub', 'heath'],
+                'landuse': ['forest', 'orchard', 'vineyard'],
+                'leisure': ['park', 'garden'],
             },
             output_path=output_path,
-            label="OSM foliage",
+            label='OSM foliage',
         )
     except Exception as e:
-        logger.warning(f"Failed to download OSM foliage (continuing): {e}")
+        logger.warning(f'Failed to download OSM foliage (continuing): {e}')
         return 0
 
 
 def download_osm_roads(location: tuple, radius_meters: float, output_path: str) -> int:
     """Download road centerlines (LineStrings) tagged ``highway=*``."""
     logger.info(
-        f"Downloading OSM roads for location {location} with radius "
-        f"{radius_meters}m to {output_path}"
+        f'Downloading OSM roads for location {location} with radius '
+        f'{radius_meters}m to {output_path}'
     )
     try:
         return _download(
             location, radius_meters,
-            tags={"highway": True},
+            tags={'highway': True},
             output_path=output_path,
-            label="OSM roads",
+            label='OSM roads',
         )
     except Exception as e:
-        logger.warning(f"Failed to download OSM roads (continuing): {e}")
+        logger.warning(f'Failed to download OSM roads (continuing): {e}')
         return 0
 
 
@@ -123,16 +123,16 @@ def download_osm_parking(location: tuple, radius_meters: float, output_path: str
     parking exclusion.
     """
     logger.info(
-        f"Downloading OSM parking for location {location} with radius "
-        f"{radius_meters}m to {output_path}"
+        f'Downloading OSM parking for location {location} with radius '
+        f'{radius_meters}m to {output_path}'
     )
     try:
         return _download(
             location, radius_meters,
-            tags={"amenity": ["parking"]},
+            tags={'amenity': ['parking']},
             output_path=output_path,
-            label="OSM parking",
+            label='OSM parking',
         )
     except Exception as e:
-        logger.warning(f"Failed to download OSM parking (continuing): {e}")
+        logger.warning(f'Failed to download OSM parking (continuing): {e}')
         return 0

@@ -46,3 +46,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Fixed the 28 `ament_flake8` violations in package code (long lines, an unused
   import, continuation-indent, blank-line, lambda-assignment, and
   trailing-whitespace / missing-newline issues).
+- Conformed the code to the full `ament_flake8` plugin set: converted inline
+  strings to single quotes (flake8-quotes, 467 sites) and reordered imports
+  into stdlib / third-party / first-party groups (flake8-import-order, google
+  style). Added a `[flake8]` section to `setup.cfg` declaring
+  `application-import-names = terraforge` so internal imports are classified
+  first-party.
+- Reformatted ~25 docstrings to satisfy `ament_pep257` (one-line summary
+  ending in a period, blank line before the body, closing quotes on their own
+  line, imperative mood).
+- Fixed 4 pre-existing functional test failures unrelated to the audit: a cache
+  directory name drift (`r500` → `r500.0`), the alias-guard test now neutralises
+  DEM sizing/reprojection so the guard is what surfaces, and a sub-pixel
+  satellite-crop edge now clamps to >= 1px (was raising
+  `ValueError: cannot write empty image` at very coarse zoom).

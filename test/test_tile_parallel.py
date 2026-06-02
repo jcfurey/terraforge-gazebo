@@ -21,8 +21,8 @@ pytest.importorskip('elevation')
 pytest.importorskip('osgeo')  # textures -> elevation -> osgeo.gdal
 pytest.importorskip('pyproj')  # elevation uses pyproj directly
 
+from PIL import Image  # noqa: E402,I100,I202
 import requests  # noqa: E402
-from PIL import Image  # noqa: E402
 
 from terraforge.data_acquisition import textures  # noqa: E402
 
@@ -42,8 +42,11 @@ def _make_png_bytes(color=(255, 0, 0)):
 
 
 class _FakeSession:
-    """Thread-safe fake. Records every URL fetched; returns distinct
-    bytes per call so paste-order bugs would produce a corrupt mosaic."""
+    """Thread-safe fake.
+
+    Records every URL fetched; returns distinct
+    bytes per call so paste-order bugs would produce a corrupt mosaic.
+    """
 
     def __init__(self):
         self.fetched = []

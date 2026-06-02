@@ -73,14 +73,15 @@ DEFAULT_TARGET_MPP = 5.0
 
 class CloudMask:
     def __init__(self, mask_array: np.ndarray, bbox_wgs84: tuple):
-        """
+        """Initialize from a precomputed boolean cloud mask.
+
         Args:
             mask_array: 2D boolean numpy array, True = cloud, indexed as
                 ``mask[row, col]`` with row 0 at the NORTH edge of the bbox.
             bbox_wgs84: ``(west, south, east, north)``.
         """
         if mask_array.ndim != 2:
-            raise ValueError(f"mask must be 2D, got shape {mask_array.shape}")
+            raise ValueError(f'mask must be 2D, got shape {mask_array.shape}')
         self._mask = mask_array.astype(bool)
         self._bbox = bbox_wgs84
         self.height, self.width = mask_array.shape
@@ -101,8 +102,10 @@ class CloudMask:
         meters_per_pixel: Optional[float] = None,
         target_mpp: float = DEFAULT_TARGET_MPP,
     ):
-        """Build a mask from a satellite PNG that has been precisely cropped
-        to ``bbox_wgs84`` (north at image top, west at image left).
+        """Build a mask from a satellite PNG cropped to ``bbox_wgs84``.
+
+        The image must be precisely cropped (north at image top, west at
+        image left).
 
         Two-stage geodesic detection with bridge severing:
           1. STRICT mask = (L >= l_min) & (S <= s_max) → cloud cores
@@ -127,12 +130,12 @@ class CloudMask:
         """
         if meters_per_pixel is None or meters_per_pixel <= 0:
             raise ValueError(
-                "meters_per_pixel is required and must be positive; "
-                "running cloud-mask morphology at native resolution would "
-                "blow up memory on z18+ inputs."
+                'meters_per_pixel is required and must be positive; '
+                'running cloud-mask morphology at native resolution would '
+                'blow up memory on z18+ inputs.'
             )
 
-        img = Image.open(image_path).convert("RGB")
+        img = Image.open(image_path).convert('RGB')
 
         # Downsample to target_mpp before morphology. At z19 native (0.25 m/px
         # over a 2 km world = 8 k × 8 k = 64 MP), a 5 px Pillow opening kernel
@@ -144,9 +147,9 @@ class CloudMask:
             new_w = max(2, int(round(img.size[0] / factor)))
             new_h = max(2, int(round(img.size[1] / factor)))
             logger.info(
-                f"Cloud mask: downsampling {img.size[0]}x{img.size[1]} "
-                f"({meters_per_pixel:.3f} m/px) -> {new_w}x{new_h} "
-                f"(~{target_mpp:.1f} m/px) for morphology"
+                f'Cloud mask: downsampling {img.size[0]}x{img.size[1]} '
+                f'({meters_per_pixel:.3f} m/px) -> {new_w}x{new_h} '
+                f'(~{target_mpp:.1f} m/px) for morphology'
             )
             img = img.resize((new_w, new_h), Image.BILINEAR)
 
@@ -179,12 +182,12 @@ class CloudMask:
             empty = np.zeros(strict_mask.shape, dtype=bool)
             instance = cls(empty, bbox_wgs84)
             logger.info(
-                f"Cloud mask built from {image_path}: "
-                f"L p50/p90/p99 = {float(np.percentile(luminance, 50)):.2f}/"
-                f"{float(np.percentile(luminance, 90)):.2f}/"
-                f"{float(np.percentile(luminance, 99)):.2f}, "
-                f"strict seed set is empty (no pixel above "
-                f"L>={l_min},S<={s_max}); skipping morphology."
+                f'Cloud mask built from {image_path}: '
+                f'L p50/p90/p99 = {float(np.percentile(luminance, 50)):.2f}/'
+                f'{float(np.percentile(luminance, 90)):.2f}/'
+                f'{float(np.percentile(luminance, 99)):.2f}, '
+                f'strict seed set is empty (no pixel above '
+                f'L>={l_min},S<={s_max}); skipping morphology.'
             )
             return instance
 
@@ -221,17 +224,17 @@ class CloudMask:
 
         instance = cls(mask, bbox_wgs84)
         logger.info(
-            f"Cloud mask built from {image_path}: "
-            f"L p50/p90/p99 = {l_p50:.2f}/{l_p90:.2f}/{l_p99:.2f}, "
-            f"S p50/p90/p99 = {s_p50:.2f}/{s_p90:.2f}/{s_p99:.2f}. "
-            f"Pipeline: strict={strict_fraction:.1%} "
-            f"(L>={l_min},S<={s_max}) -> "
-            f"{seed_fraction:.1%} after seed-open({opening_px}px) -> "
-            f"{recon1_fraction:.1%} after geodesic-1 "
-            f"(into loose {loose_fraction:.1%}, {iters1} iters) -> "
-            f"{bridge_cut_fraction:.1%} after bridge-open({bridge_opening_px}px) -> "
-            f"{recon2_fraction:.1%} after geodesic-2 ({iters2} iters) -> "
-            f"{instance.cloud_fraction:.1%} after dilate({dilation_px}px)."
+            f'Cloud mask built from {image_path}: '
+            f'L p50/p90/p99 = {l_p50:.2f}/{l_p90:.2f}/{l_p99:.2f}, '
+            f'S p50/p90/p99 = {s_p50:.2f}/{s_p90:.2f}/{s_p99:.2f}. '
+            f'Pipeline: strict={strict_fraction:.1%} '
+            f'(L>={l_min},S<={s_max}) -> '
+            f'{seed_fraction:.1%} after seed-open({opening_px}px) -> '
+            f'{recon1_fraction:.1%} after geodesic-1 '
+            f'(into loose {loose_fraction:.1%}, {iters1} iters) -> '
+            f'{bridge_cut_fraction:.1%} after bridge-open({bridge_opening_px}px) -> '
+            f'{recon2_fraction:.1%} after geodesic-2 ({iters2} iters) -> '
+            f'{instance.cloud_fraction:.1%} after dilate({dilation_px}px).'
         )
         return instance
 
@@ -257,10 +260,12 @@ class CloudMask:
 def build_cloud_mask(
     image_path: str, bbox_wgs84: tuple, **kwargs
 ) -> Optional[CloudMask]:
-    """Convenience wrapper — returns None if the image can't be loaded so
-    callers can gracefully continue without cloud filtering."""
+    """Build a CloudMask, returning None if the image can't be loaded.
+
+    Lets callers gracefully continue without cloud filtering.
+    """
     try:
         return CloudMask.from_image(image_path, bbox_wgs84, **kwargs)
     except Exception as e:
-        logger.warning(f"Cloud mask unavailable ({e}); continuing without filtering")
+        logger.warning(f'Cloud mask unavailable ({e}); continuing without filtering')
         return None

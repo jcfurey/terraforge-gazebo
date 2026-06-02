@@ -34,8 +34,10 @@ def open_u8(arr_u8: np.ndarray, r: int) -> np.ndarray:
 
 
 def geodesic_dilate(seed_u8: np.ndarray, envelope_u8: np.ndarray):
-    """Grow ``seed_u8`` iteratively, intersecting each step with
-    ``envelope_u8``. Converges when no pixel is added.
+    """Grow ``seed_u8`` iteratively within ``envelope_u8`` until stable.
+
+    Intersects each step with ``envelope_u8``; converges when no pixel is
+    added.
 
     Returns ``(final_mask_u8, iters_used)``. The iter count is exposed for
     diagnostic logging — callers can tell whether they hit the

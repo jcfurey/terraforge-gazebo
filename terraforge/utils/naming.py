@@ -26,7 +26,7 @@ def safe_identifier(value: str, *, field: str) -> str:
     extension stub or a hyphenated suffix).
     """
     if not isinstance(value, str) or not value:
-        raise ValueError(f"{field} must be a non-empty string")
+        raise ValueError(f'{field} must be a non-empty string')
     if not _SAFE_IDENT.match(value):
         raise ValueError(
             f"{field}={value!r} contains disallowed characters. "

@@ -44,13 +44,14 @@ def _utm_crs_for(lat: float, lon: float) -> str:
     if zone > 60:
         zone = 1
     hemisphere = 326 if lat >= 0 else 327
-    return f"EPSG:{hemisphere}{zone:02d}"
+    return f'EPSG:{hemisphere}{zone:02d}'
 
 
 def _calculate_bounds_wgs84(location: tuple, radius_meters: float) -> tuple:
-    """
-    Calculate a (west, south, east, north) WGS84 bbox whose UTM projection is
-    exactly (2*radius_meters) x (2*radius_meters) centered on ``location``.
+    """Calculate the WGS84 bbox around ``location``.
+
+    Returns a (west, south, east, north) box whose UTM projection is exactly
+    (2*radius_meters) x (2*radius_meters) centered on ``location``.
 
     Args:
         location: (latitude, longitude) in WGS84.
@@ -63,8 +64,8 @@ def _calculate_bounds_wgs84(location: tuple, radius_meters: float) -> tuple:
     lat, lon = location
     utm_crs = _utm_crs_for(lat, lon)
 
-    to_utm = Transformer.from_crs("EPSG:4326", utm_crs, always_xy=True)
-    to_wgs = Transformer.from_crs(utm_crs, "EPSG:4326", always_xy=True)
+    to_utm = Transformer.from_crs('EPSG:4326', utm_crs, always_xy=True)
+    to_wgs = Transformer.from_crs(utm_crs, 'EPSG:4326', always_xy=True)
 
     cx_utm, cy_utm = to_utm.transform(lon, lat)
     west_lon, south_lat = to_wgs.transform(cx_utm - radius_meters, cy_utm - radius_meters)
@@ -77,11 +78,11 @@ def _calculate_bounds_wgs84(location: tuple, radius_meters: float) -> tuple:
     # Fail loudly here rather than chase the symptom three stages downstream.
     if west_lon > east_lon:
         raise RuntimeError(
-            f"Bbox crosses the antimeridian "
-            f"(W={west_lon:.4f}°, E={east_lon:.4f}°) for origin "
-            f"({lat:.4f}°, {lon:.4f}°) ± {radius_meters} m. Antimeridian-"
-            f"crossing worlds are not supported by the SRTM/OSM/tile "
-            f"fetchers used here."
+            f'Bbox crosses the antimeridian '
+            f'(W={west_lon:.4f}°, E={east_lon:.4f}°) for origin '
+            f'({lat:.4f}°, {lon:.4f}°) ± {radius_meters} m. Antimeridian-'
+            f'crossing worlds are not supported by the SRTM/OSM/tile '
+            f'fetchers used here.'
         )
 
     return (west_lon, south_lat, east_lon, north_lat)
@@ -92,8 +93,8 @@ def download_dem(location: tuple, radius_meters: float, output_path: str):
     from terraforge.utils.retry import retry_call
 
     logger.info(
-        f"Downloading DEM for location {location} with radius {radius_meters}m "
-        f"to {output_path}"
+        f'Downloading DEM for location {location} with radius {radius_meters}m '
+        f'to {output_path}'
     )
     bounds = _calculate_bounds_wgs84(location, radius_meters)
 
@@ -110,9 +111,9 @@ def download_dem(location: tuple, radius_meters: float, output_path: str):
             initial_delay=2.0,
             label='DEM download (SRTM3)',
         )
-        logger.info(f"DEM data downloaded successfully to {output_path}")
+        logger.info(f'DEM data downloaded successfully to {output_path}')
     except Exception as e:
-        logger.error(f"Failed to download DEM: {e}")
+        logger.error(f'Failed to download DEM: {e}')
         raise
 
 
@@ -124,8 +125,7 @@ def reproject_dem_to_utm(
     pixel_count: int,
     utm_crs: str,
 ) -> None:
-    """Warp a WGS84 DEM to a square UTM grid clipped to ±``radius_meters``
-    around ``location``.
+    """Warp a WGS84 DEM to a square UTM grid clipped to ±``radius_meters`` around ``location``.
 
     The output is exactly ``pixel_count`` x ``pixel_count`` pixels spanning
     (2R x 2R) meters in the given UTM zone, i.e. uniform meters-per-pixel on
@@ -147,7 +147,7 @@ def reproject_dem_to_utm(
                        in the pipeline.
     """
     lat, lon = location
-    to_utm = Transformer.from_crs("EPSG:4326", utm_crs, always_xy=True)
+    to_utm = Transformer.from_crs('EPSG:4326', utm_crs, always_xy=True)
     cx_utm, cy_utm = to_utm.transform(lon, lat)
     output_bounds = (
         cx_utm - radius_meters,
@@ -163,7 +163,7 @@ def reproject_dem_to_utm(
     # DEMs (--dem-file) may use a different value or none at all.
     src_ds = gdal.Open(src_path)
     if src_ds is None:
-        raise RuntimeError(f"Failed to open source DEM for nodata probe: {src_path}")
+        raise RuntimeError(f'Failed to open source DEM for nodata probe: {src_path}')
     try:
         src_nodata = src_ds.GetRasterBand(1).GetNoDataValue()
     finally:
@@ -179,16 +179,16 @@ def reproject_dem_to_utm(
         # ≈ -11 km) so the warp's fill is detectable downstream.
         src_nodata = -99999.0
         logger.warning(
-            f"Source DEM {src_path} has no nodata value; using sentinel "
-            f"{src_nodata:.0f} m to tag pixels outside source coverage."
+            f'Source DEM {src_path} has no nodata value; using sentinel '
+            f'{src_nodata:.0f} m to tag pixels outside source coverage.'
         )
 
     logger.info(
-        f"Reprojecting DEM {src_path} -> {dst_path}: "
-        f"{utm_crs}, {pixel_count}x{pixel_count} px over "
-        f"({2 * radius_meters:.0f}m x {2 * radius_meters:.0f}m), "
-        f"res={2 * radius_meters / pixel_count:.2f} m/px "
-        f"(nodata={src_nodata})"
+        f'Reprojecting DEM {src_path} -> {dst_path}: '
+        f'{utm_crs}, {pixel_count}x{pixel_count} px over '
+        f'({2 * radius_meters:.0f}m x {2 * radius_meters:.0f}m), '
+        f'res={2 * radius_meters / pixel_count:.2f} m/px '
+        f'(nodata={src_nodata})'
     )
     try:
         result = gdal.Warp(
@@ -205,9 +205,9 @@ def reproject_dem_to_utm(
             dstNodata=src_nodata,
         )
         if result is None:
-            raise RuntimeError(f"gdal.Warp returned None for {src_path}")
+            raise RuntimeError(f'gdal.Warp returned None for {src_path}')
         # Explicitly close so the file is flushed before callers open it.
         result = None
     except Exception as e:
-        logger.error(f"Failed to reproject DEM to UTM: {e}")
+        logger.error(f'Failed to reproject DEM to UTM: {e}')
         raise

@@ -2,22 +2,22 @@
 #
 # Licensed under the MIT License.
 import concurrent.futures
+from dataclasses import dataclass
+from io import BytesIO
 import math
 import os
 import threading
-from dataclasses import dataclass
-from io import BytesIO
 from typing import Callable, Optional
 
-import requests
 from PIL import Image
+import requests
 
+from terraforge.data_acquisition.elevation import _calculate_bounds_wgs84
 from terraforge.utils.config import config
 from terraforge.utils.logging import logger
 from terraforge.utils.retry import retry_call
-from terraforge.data_acquisition.elevation import _calculate_bounds_wgs84
 
-USER_AGENT = "terraforge_gazebo/0.1 (+https://github.com/r3tr056/terraforge-gazebo)"
+USER_AGENT = 'terraforge_gazebo/0.1 (+https://github.com/r3tr056/terraforge-gazebo)'
 # Upper bound on tile count per world. The pipeline steps zoom DOWN from the
 # provider's max until the count fits. Raised from 64 so city-scale worlds
 # (2-3 km) can still pull at zoom 18-19. At lat 32° with 2 km side length,
@@ -55,7 +55,7 @@ class TileProvider:
     url_template: Optional[str] = None
     url_builder: Optional[Callable[[int, int, int, str], str]] = None
 
-    def tile_url(self, z: int, x: int, y: int, api_key: str = "") -> str:
+    def tile_url(self, z: int, x: int, y: int, api_key: str = '') -> str:
         if self.url_builder is not None:
             return self.url_builder(z, x, y, api_key)
         return self.url_template.format(z=z, x=x, y=y, key=api_key)
@@ -72,105 +72,105 @@ def _xy_to_quadkey(x: int, y: int, z: int) -> str:
         if (y & mask) != 0:
             digit += 2
         digits.append(str(digit))
-    return "".join(digits)
+    return ''.join(digits)
 
 
 def _bing_url(z: int, x: int, y: int, api_key: str) -> str:
     return (
-        f"https://ecn.t0.tiles.virtualearth.net/tiles/a{_xy_to_quadkey(x, y, z)}.jpeg"
-        f"?g=14336&key={api_key}"
+        f'https://ecn.t0.tiles.virtualearth.net/tiles/a{_xy_to_quadkey(x, y, z)}.jpeg'
+        f'?g=14336&key={api_key}'
     )
 
 
 PROVIDERS = {
-    "mapbox": TileProvider(
-        name="mapbox",
+    'mapbox': TileProvider(
+        name='mapbox',
         requires_key=True,
         max_zoom=22,
-        attribution="(c) Mapbox, (c) OpenStreetMap",
+        attribution='(c) Mapbox, (c) OpenStreetMap',
         url_template=(
-            "https://api.mapbox.com/styles/v1/mapbox/satellite-v9/tiles/"
-            "{z}/{x}/{y}?access_token={key}"
+            'https://api.mapbox.com/styles/v1/mapbox/satellite-v9/tiles/'
+            '{z}/{x}/{y}?access_token={key}'
         ),
     ),
-    "esri": TileProvider(
-        name="esri",
+    'esri': TileProvider(
+        name='esri',
         requires_key=False,
         max_zoom=19,
-        attribution="Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community",
+        attribution='Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community',
         url_template=(
-            "https://server.arcgisonline.com/ArcGIS/rest/services/"
-            "World_Imagery/MapServer/tile/{z}/{y}/{x}"
+            'https://server.arcgisonline.com/ArcGIS/rest/services/'
+            'World_Imagery/MapServer/tile/{z}/{y}/{x}'
         ),
     ),
-    "sentinel2": TileProvider(
-        name="sentinel2",
+    'sentinel2': TileProvider(
+        name='sentinel2',
         requires_key=False,
         max_zoom=18,
         attribution=(
-            "Sentinel-2 cloudless 2023 by EOX (CC BY 4.0). "
-            "Contains modified Copernicus Sentinel data."
+            'Sentinel-2 cloudless 2023 by EOX (CC BY 4.0). '
+            'Contains modified Copernicus Sentinel data.'
         ),
         url_template=(
-            "https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2023_3857/"
-            "default/g/{z}/{y}/{x}.jpg"
+            'https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2023_3857/'
+            'default/g/{z}/{y}/{x}.jpg'
         ),
     ),
-    "maptiler": TileProvider(
-        name="maptiler",
+    'maptiler': TileProvider(
+        name='maptiler',
         requires_key=True,
         max_zoom=20,
-        attribution="(c) MapTiler (c) OpenStreetMap contributors",
+        attribution='(c) MapTiler (c) OpenStreetMap contributors',
         url_template=(
-            "https://api.maptiler.com/tiles/satellite-v2/{z}/{x}/{y}.jpg?key={key}"
+            'https://api.maptiler.com/tiles/satellite-v2/{z}/{x}/{y}.jpg?key={key}'
         ),
     ),
-    "bing": TileProvider(
-        name="bing",
+    'bing': TileProvider(
+        name='bing',
         requires_key=True,
         max_zoom=19,
-        attribution="(c) Microsoft, Earthstar Geographics",
+        attribution='(c) Microsoft, Earthstar Geographics',
         url_builder=_bing_url,
     ),
-    "usgs_naip": TileProvider(
-        name="usgs_naip",
+    'usgs_naip': TileProvider(
+        name='usgs_naip',
         requires_key=False,
         max_zoom=18,
-        attribution="USGS NAIP (public domain). US coverage only.",
+        attribution='USGS NAIP (public domain). US coverage only.',
         url_template=(
-            "https://services.nationalmap.gov/arcgis/rest/services/"
-            "USGSNAIPImagery/ImageServer/tile/{z}/{y}/{x}"
+            'https://services.nationalmap.gov/arcgis/rest/services/'
+            'USGSNAIPImagery/ImageServer/tile/{z}/{y}/{x}'
         ),
     ),
-    "gibs_bluemarble": TileProvider(
-        name="gibs_bluemarble",
+    'gibs_bluemarble': TileProvider(
+        name='gibs_bluemarble',
         requires_key=False,
         max_zoom=8,
-        attribution="NASA GIBS BlueMarble_NextGeneration (public domain)",
+        attribution='NASA GIBS BlueMarble_NextGeneration (public domain)',
         url_template=(
-            "https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/"
-            "BlueMarble_NextGeneration/default/500m/"
-            "GoogleMapsCompatible_Level8/{z}/{y}/{x}.jpeg"
+            'https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/'
+            'BlueMarble_NextGeneration/default/500m/'
+            'GoogleMapsCompatible_Level8/{z}/{y}/{x}.jpeg'
         ),
     ),
 }
 
 _KEY_ENV_BY_PROVIDER = {
-    "mapbox": "MAPBOX_API_KEY",
-    "maptiler": "MAPTILER_API_KEY",
-    "bing": "BING_MAPS_API_KEY",
+    'mapbox': 'MAPBOX_API_KEY',
+    'maptiler': 'MAPTILER_API_KEY',
+    'bing': 'BING_MAPS_API_KEY',
 }
 
 
 def _env_var_for(provider: str) -> str:
-    return _KEY_ENV_BY_PROVIDER.get(provider, "")
+    return _KEY_ENV_BY_PROVIDER.get(provider, '')
 
 
 def _default_key_for(provider: str) -> str:
     attr = _KEY_ENV_BY_PROVIDER.get(provider)
     if attr is None:
-        return ""
-    return getattr(config, attr, "") or ""
+        return ''
+    return getattr(config, attr, '') or ''
 
 
 def _pick_zoom(bbox_wgs84, max_zoom, max_tiles=MAX_TILES, forced_zoom=None):
@@ -209,8 +209,11 @@ def _deg2num(lat_deg, lon_deg, zoom):
 
 
 def _deg2pixel(lat_deg, lon_deg, zoom, tile_size=256):
-    """Continuous (sub-tile) global pixel coord for a given lat/lon. Used to
-    crop the merged tile mosaic to the exact requested bbox in pixel space."""
+    """Continuous (sub-tile) global pixel coord for a given lat/lon.
+
+    Used to
+    crop the merged tile mosaic to the exact requested bbox in pixel space.
+    """
     lat_rad = math.radians(lat_deg)
     n = 2.0 ** zoom
     x_pixel = (lon_deg + 180.0) / 360.0 * n * tile_size
@@ -255,50 +258,50 @@ def _reproject_webmercator_to_utm(
     west, south, east, north = bbox_wgs84
 
     # Source PNG bounds in Web Mercator meters.
-    wgs_to_merc = Transformer.from_crs("EPSG:4326", "EPSG:3857", always_xy=True)
+    wgs_to_merc = Transformer.from_crs('EPSG:4326', 'EPSG:3857', always_xy=True)
     ul_mx, ul_my = wgs_to_merc.transform(west, north)
     lr_mx, lr_my = wgs_to_merc.transform(east, south)
 
     # Target UTM square: WGS84 bbox was built as UTM_center ± r, so converting
     # the WGS84 corners back to UTM recovers those exact coordinates.
-    wgs_to_utm = Transformer.from_crs("EPSG:4326", utm_crs, always_xy=True)
+    wgs_to_utm = Transformer.from_crs('EPSG:4326', utm_crs, always_xy=True)
     sw_ux, sw_uy = wgs_to_utm.transform(west, south)
     ne_ux, ne_uy = wgs_to_utm.transform(east, north)
 
     # VRT lets us stamp georef without touching pixel data or writing to disk.
-    vrt_path = "/vsimem/terraforge_wm_source.vrt"
-    tmp_tif = "/vsimem/terraforge_utm_warped.tif"
+    vrt_path = '/vsimem/terraforge_wm_source.vrt'
+    tmp_tif = '/vsimem/terraforge_utm_warped.tif'
     try:
         vrt = gdal.Translate(
             vrt_path,
             src_png_path,
-            format="VRT",
-            outputSRS="EPSG:3857",
+            format='VRT',
+            outputSRS='EPSG:3857',
             outputBounds=[ul_mx, ul_my, lr_mx, lr_my],  # [ulx, uly, lrx, lry]
         )
         if vrt is None:
-            raise RuntimeError(f"gdal.Translate failed for {src_png_path}")
+            raise RuntimeError(f'gdal.Translate failed for {src_png_path}')
         vrt = None
 
         # gdal.Warp's outputBounds is [minX, minY, maxX, maxY].
         warped = gdal.Warp(
             tmp_tif,
             vrt_path,
-            format="GTiff",
+            format='GTiff',
             dstSRS=utm_crs,
             outputBounds=[sw_ux, sw_uy, ne_ux, ne_uy],
             width=output_px,
             height=output_px,
-            resampleAlg="bilinear",
+            resampleAlg='bilinear',
             multithread=True,
         )
         if warped is None:
-            raise RuntimeError("gdal.Warp failed")
+            raise RuntimeError('gdal.Warp failed')
         warped = None
 
-        translated = gdal.Translate(dst_png_path, tmp_tif, format="PNG")
+        translated = gdal.Translate(dst_png_path, tmp_tif, format='PNG')
         if translated is None:
-            raise RuntimeError("gdal.Translate to PNG failed")
+            raise RuntimeError('gdal.Translate to PNG failed')
         translated = None
     finally:
         for p in (vrt_path, tmp_tif):
@@ -308,9 +311,9 @@ def _reproject_webmercator_to_utm(
                 pass
 
     logger.info(
-        f"Reprojected texture: EPSG:3857 -> {utm_crs}, "
-        f"bounds=[{sw_ux:.1f}, {sw_uy:.1f}, {ne_ux:.1f}, {ne_uy:.1f}] UTM m "
-        f"({output_px}x{output_px} px, {(2*radius_meters)/output_px:.3f} m/px)"
+        f'Reprojected texture: EPSG:3857 -> {utm_crs}, '
+        f'bounds=[{sw_ux:.1f}, {sw_uy:.1f}, {ne_ux:.1f}, {ne_uy:.1f}] UTM m '
+        f'({output_px}x{output_px} px, {(2*radius_meters)/output_px:.3f} m/px)'
     )
 
 
@@ -354,27 +357,27 @@ def download_satellite_texture_tiles(
             is left in Web Mercator and will drift against UTM-placed assets.
     """
     if provider is None:
-        provider = (config.SATELLITE_TEXTURE_SOURCE or "mapbox").lower()
+        provider = (config.SATELLITE_TEXTURE_SOURCE or 'mapbox').lower()
     provider = provider.lower()
     if provider not in PROVIDERS:
         raise ValueError(
-            f"Unknown tile provider {provider!r}. Available: {sorted(PROVIDERS)}"
+            f'Unknown tile provider {provider!r}. Available: {sorted(PROVIDERS)}'
         )
     p = PROVIDERS[provider]
 
     if api_key is None:
         api_key = mapbox_api_key if mapbox_api_key is not None else _default_key_for(provider)
     if p.requires_key and not api_key:
-        env = _env_var_for(provider) or "<unknown>"
+        env = _env_var_for(provider) or '<unknown>'
         raise RuntimeError(
-            f"Provider {provider!r} requires an API key. "
-            f"Pass `api_key=` or export {env}."
+            f'Provider {provider!r} requires an API key. '
+            f'Pass `api_key=` or export {env}.'
         )
 
     logger.info(
-        f"Downloading satellite texture tiles for location {location} "
-        f"with radius {radius_meters}m to {output_dir} "
-        f"via provider {provider!r}"
+        f'Downloading satellite texture tiles for location {location} '
+        f'with radius {radius_meters}m to {output_dir} '
+        f'via provider {provider!r}'
     )
 
     bbox_wgs84 = _calculate_bounds_wgs84(location, radius_meters)
@@ -384,9 +387,9 @@ def download_satellite_texture_tiles(
     _west, _south, _east, _north = bbox_wgs84
     if abs(_north) > MAX_WEBMERCATOR_LAT or abs(_south) > MAX_WEBMERCATOR_LAT:
         raise RuntimeError(
-            f"bbox latitude exceeds Web Mercator limit (±{MAX_WEBMERCATOR_LAT:.4f}°): "
-            f"S={_south:.4f}, N={_north:.4f}. Satellite tile providers used here "
-            f"are EPSG:3857 and have no defined imagery at the poles."
+            f'bbox latitude exceeds Web Mercator limit (±{MAX_WEBMERCATOR_LAT:.4f}°): '
+            f'S={_south:.4f}, N={_north:.4f}. Satellite tile providers used here '
+            f'are EPSG:3857 and have no defined imagery at the poles.'
         )
     tile_size = 256
 
@@ -394,14 +397,14 @@ def download_satellite_texture_tiles(
         bbox_wgs84, max_zoom=p.max_zoom, max_tiles=max_tiles, forced_zoom=zoom,
     )
     logger.info(
-        f"Selected zoom {zoom} ({tile_count} tiles) for radius {radius_meters}m "
-        f"(provider max_zoom={p.max_zoom}, max_tiles={max_tiles})"
+        f'Selected zoom {zoom} ({tile_count} tiles) for radius {radius_meters}m '
+        f'(provider max_zoom={p.max_zoom}, max_tiles={max_tiles})'
     )
     if tile_count > 512:
         logger.warning(
-            f"Pulling {tile_count} tiles at zoom {zoom} — expect a ~{tile_count * 0.1:.0f}s "
-            f"download and a {tile_count * tile_size * tile_size * 3 // (1024*1024)} MB "
-            f"uncropped mosaic. Drop --zoom if the tile server rate-limits."
+            f'Pulling {tile_count} tiles at zoom {zoom} — expect a ~{tile_count * 0.1:.0f}s '
+            f'download and a {tile_count * tile_size * tile_size * 3 // (1024*1024)} MB '
+            f'uncropped mosaic. Drop --zoom if the tile server rate-limits.'
         )
 
     west, south, east, north = bbox_wgs84
@@ -414,10 +417,10 @@ def download_satellite_texture_tiles(
     if (top_left_tile[0] > bottom_right_tile[0]
             or top_left_tile[1] > bottom_right_tile[1]):
         raise RuntimeError(
-            f"Invalid tile extent at zoom {zoom}: top_left={top_left_tile} "
-            f"is not north-west of bottom_right={bottom_right_tile} for bbox "
-            f"W={west:.4f} S={south:.4f} E={east:.4f} N={north:.4f}. "
-            f"Likely an antimeridian-crossing bbox, which is unsupported."
+            f'Invalid tile extent at zoom {zoom}: top_left={top_left_tile} '
+            f'is not north-west of bottom_right={bottom_right_tile} for bbox '
+            f'W={west:.4f} S={south:.4f} E={east:.4f} N={north:.4f}. '
+            f'Likely an antimeridian-crossing bbox, which is unsupported.'
         )
     tiles_x = range(top_left_tile[0], bottom_right_tile[0] + 1)
     tiles_y = range(top_left_tile[1], bottom_right_tile[1] + 1)
@@ -425,14 +428,14 @@ def download_satellite_texture_tiles(
     # Cached final texture. Keyed by provider + zoom + projection so that
     # toggling UTM reprojection or changing either input invalidates cleanly
     # without clobbering caches from other runs.
-    proj_tag = "utm" if utm_crs else "wm"
+    proj_tag = 'utm' if utm_crs else 'wm'
     cached_cropped_path = os.path.join(
-        output_dir, f"satellite_texture_{provider}_z{zoom}_{proj_tag}.png"
+        output_dir, f'satellite_texture_{provider}_z{zoom}_{proj_tag}.png'
     )
-    output_texture_path = os.path.join(output_dir, "satellite_texture.png")
+    output_texture_path = os.path.join(output_dir, 'satellite_texture.png')
     if os.path.exists(cached_cropped_path):
         logger.info(
-            f"Cache hit: reusing merged texture from {cached_cropped_path}"
+            f'Cache hit: reusing merged texture from {cached_cropped_path}'
         )
         # Copy into the canonical filename so downstream (cloud_mask,
         # foliage_mask, template render) finds it at the same path
@@ -440,8 +443,8 @@ def download_satellite_texture_tiles(
         import shutil
         shutil.copy2(cached_cropped_path, output_texture_path)
         logger.info(
-            f"Merged satellite texture saved to {output_texture_path} "
-            f"(attribution: {p.attribution})"
+            f'Merged satellite texture saved to {output_texture_path} '
+            f'(attribution: {p.attribution})'
         )
         return
 
@@ -453,7 +456,7 @@ def download_satellite_texture_tiles(
         ),
     )
 
-    headers = {"User-Agent": USER_AGENT}
+    headers = {'User-Agent': USER_AGENT}
     failed_tiles = []
     cache_hits = 0
     fetched = 0
@@ -467,7 +470,7 @@ def download_satellite_texture_tiles(
     # runs at the same (lat, lon, radius) don't stomp.
     tile_specs = [
         (x_tile, y_tile, os.path.join(
-            output_dir, f"tile_{provider}_z{zoom}_{x_tile}_{y_tile}.png"))
+            output_dir, f'tile_{provider}_z{zoom}_{x_tile}_{y_tile}.png'))
         for x_tile in tiles_x
         for y_tile in tiles_y
     ]
@@ -477,7 +480,7 @@ def download_satellite_texture_tiles(
         x_tile, y_tile, tile_output_path = spec
         if os.path.exists(tile_output_path) and os.path.getsize(tile_output_path) > 0:
             try:
-                return (x_tile, y_tile, Image.open(tile_output_path).convert("RGB"),
+                return (x_tile, y_tile, Image.open(tile_output_path).convert('RGB'),
                         'cache', None)
             except (OSError, Image.UnidentifiedImageError) as e:
                 # Truncated/corrupt cache file (partial write, bad bytes) —
@@ -485,7 +488,7 @@ def download_satellite_texture_tiles(
                 # genuinely unexpected error surfaces instead of being
                 # masked as a routine cache miss.
                 logger.warning(
-                    f"tile {x_tile}_{y_tile}: corrupt cache ({e}); re-fetching"
+                    f'tile {x_tile}_{y_tile}: corrupt cache ({e}); re-fetching'
                 )
         tile_url = p.tile_url(zoom, x_tile, y_tile, api_key)
 
@@ -504,12 +507,12 @@ def download_satellite_texture_tiles(
                 attempts=3,
                 initial_delay=1.0,
                 exceptions=(requests.exceptions.RequestException,),
-                label=f"tile {x_tile}_{y_tile}",
+                label=f'tile {x_tile}_{y_tile}',
             )
         except Exception as e:
             return (x_tile, y_tile, None, 'failed', e)
         try:
-            img = Image.open(BytesIO(content)).convert("RGB")
+            img = Image.open(BytesIO(content)).convert('RGB')
             img.save(tile_output_path)
         except Exception as e:
             return (x_tile, y_tile, None, 'failed', e)
@@ -531,7 +534,7 @@ def download_satellite_texture_tiles(
             elif status == 'fetched':
                 fetched += 1
             else:
-                logger.error(f"Error on tile {x_tile}_{y_tile}: {err}")
+                logger.error(f'Error on tile {x_tile}_{y_tile}: {err}')
                 failed_tiles.append((x_tile, y_tile))
                 continue
             with paste_lock:
@@ -541,15 +544,15 @@ def download_satellite_texture_tiles(
             if progress is not None and (completed % report_every == 0
                                          or completed == total_tiles):
                 progress(
-                    f"Tiles: {completed}/{total_tiles} "
-                    f"({cache_hits} cached, {fetched} downloaded, "
-                    f"{len(failed_tiles)} failed)"
+                    f'Tiles: {completed}/{total_tiles} '
+                    f'({cache_hits} cached, {fetched} downloaded, '
+                    f'{len(failed_tiles)} failed)'
                 )
 
     total = cache_hits + fetched + len(failed_tiles)
     logger.info(
-        f"Tiles: {cache_hits} cached, {fetched} downloaded, "
-        f"{len(failed_tiles)} failed (of {total})"
+        f'Tiles: {cache_hits} cached, {fetched} downloaded, '
+        f'{len(failed_tiles)} failed (of {total})'
     )
 
     # A blank PIL RGB canvas defaults to black, so swallowed failures would
@@ -557,12 +560,12 @@ def download_satellite_texture_tiles(
     # writing a corrupt mosaic — operator can re-run (the cache is reused).
     if failed_tiles:
         total = len(tiles_x) * len(tiles_y)
-        sample = ', '.join(f"{x}_{y}" for x, y in failed_tiles[:5])
-        more = f" (+{len(failed_tiles) - 5} more)" if len(failed_tiles) > 5 else ""
+        sample = ', '.join(f'{x}_{y}' for x, y in failed_tiles[:5])
+        more = f' (+{len(failed_tiles) - 5} more)' if len(failed_tiles) > 5 else ''
         raise RuntimeError(
-            f"{len(failed_tiles)} of {total} satellite tiles failed to download "
-            f"from provider {provider!r}; aborting to avoid a corrupt mosaic. "
-            f"Failed tiles: {sample}{more}. Re-run to retry."
+            f'{len(failed_tiles)} of {total} satellite tiles failed to download '
+            f'from provider {provider!r}; aborting to avoid a corrupt mosaic. '
+            f'Failed tiles: {sample}{more}. Re-run to retry.'
         )
 
     # Crop the merged mosaic to the EXACT requested bbox in pixel space.
@@ -581,11 +584,16 @@ def download_satellite_texture_tiles(
         min(int(round(br_px[0] - tile_origin_px[0])), merged_image.width),
         min(int(round(br_px[1] - tile_origin_px[1])), merged_image.height),
     )
+    # Guard against a degenerate (sub-pixel) bbox at very coarse zoom: a
+    # zero-width/height crop makes PIL raise "cannot write empty image" on
+    # save. Clamp to at least 1px so the mosaic is always writable.
+    _l, _t, _r, _b = crop_box
+    crop_box = (_l, _t, max(_r, _l + 1), max(_b, _t + 1))
     cropped = merged_image.crop(crop_box)
     logger.info(
-        f"Cropped mosaic to user bbox: "
-        f"mosaic={merged_image.size} -> crop={cropped.size} "
-        f"({crop_box[2] - crop_box[0]}x{crop_box[3] - crop_box[1]} px)"
+        f'Cropped mosaic to user bbox: '
+        f'mosaic={merged_image.size} -> crop={cropped.size} '
+        f'({crop_box[2] - crop_box[0]}x{crop_box[3] - crop_box[1]} px)'
     )
     # Cap the texture so it fits in a reasonable GPU memory budget.
     # Gazebo loads the whole PNG as a single Ogre2 texture at world
@@ -598,10 +606,10 @@ def download_satellite_texture_tiles(
         new_w = max(1, int(round(cw * scale)))
         new_h = max(1, int(round(ch * scale)))
         logger.warning(
-            f"Satellite texture {cw}x{ch} exceeds max_texture_px "
-            f"({max_texture_px}); downsampling to {new_w}x{new_h} before "
-            f"save (GPU memory / Gazebo load-time safety). Pass "
-            f"--max-texture-size to raise or lower the cap."
+            f'Satellite texture {cw}x{ch} exceeds max_texture_px '
+            f'({max_texture_px}); downsampling to {new_w}x{new_h} before '
+            f'save (GPU memory / Gazebo load-time safety). Pass '
+            f'--max-texture-size to raise or lower the cap.'
         )
         cropped = cropped.resize((new_w, new_h), Image.LANCZOS)
 
@@ -612,7 +620,7 @@ def download_satellite_texture_tiles(
         # sample the web-mercator grid significantly.
         import math as _math
         wm_staging_path = os.path.join(
-            output_dir, f"satellite_texture_{provider}_z{zoom}_wm_staging.png")
+            output_dir, f'satellite_texture_{provider}_z{zoom}_wm_staging.png')
         cropped.save(wm_staging_path)
         output_px = int(round(_math.sqrt(cropped.size[0] * cropped.size[1])))
         _reproject_webmercator_to_utm(
@@ -638,6 +646,6 @@ def download_satellite_texture_tiles(
         cropped.save(output_texture_path)
         cropped.save(cached_cropped_path)
     logger.info(
-        f"Merged satellite texture saved to {output_texture_path} "
-        f"(attribution: {p.attribution})"
+        f'Merged satellite texture saved to {output_texture_path} '
+        f'(attribution: {p.attribution})'
     )

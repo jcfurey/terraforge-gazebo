@@ -59,7 +59,7 @@ def _tree_placement(name, xy):
 
 def test_bodies_packed_into_single_shared_link():
     # Three buildings, all within a single 200 m tile at the origin.
-    buildings = [_building_placement(f"b{i}", (i * 10.0, 0.0)) for i in range(3)]
+    buildings = [_building_placement(f'b{i}', (i * 10.0, 0.0)) for i in range(3)]
     records = build_scene_tiles(buildings, trees=None, roads=None,
                                 half_extent_m=500.0, tile_size_m=200.0)
     assert len(records) == 1
@@ -68,14 +68,14 @@ def test_bodies_packed_into_single_shared_link():
     assert sdf.count('<link name=') == 1
     # Every building's visual is present.
     for i in range(3):
-        assert f"vis_b{i}" in sdf
+        assert f'vis_b{i}' in sdf
     # No joints (single-link model is trivially valid).
     assert '<joint' not in sdf
 
 
 def test_cartoon_trees_get_own_links_jointed_to_bodies_link():
     buildings = [_building_placement('b0', (0.0, 0.0))]
-    trees = [_tree_placement(f"t{i}", (i * 5.0, 10.0)) for i in range(2)]
+    trees = [_tree_placement(f't{i}', (i * 5.0, 10.0)) for i in range(2)]
     records = build_scene_tiles(buildings, trees=trees, roads=None,
                                 half_extent_m=500.0, tile_size_m=200.0)
     sdf = records[0]['model_sdf']

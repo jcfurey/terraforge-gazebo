@@ -33,9 +33,11 @@ _DEFAULT_MAX_OGRE2_SIZE = 1025
 
 
 def next_ogre2_size(n: int, max_size: int = _DEFAULT_MAX_OGRE2_SIZE) -> int:
-    """Return the smallest Ogre2-valid heightmap size >= ``n``, capped at
-    ``max_size`` (default 1025). To allow 2049 / 4097 for high-res flyovers,
-    the caller must pass an explicit larger ``max_size``."""
+    """Return the smallest Ogre2-valid heightmap size >= ``n``.
+
+    Capped at ``max_size`` (default 1025). To allow 2049 / 4097 for high-res
+    flyovers, the caller must pass an explicit larger ``max_size``.
+    """
     for s in _OGRE2_VALID_SIZES:
         if s >= n:
             return min(s, max_size)
@@ -61,24 +63,24 @@ def process_dem_to_heightmap(dem_filepath: str, output_heightmap_path: str) -> d
     use these to (a) size the SDF ``<heightmap>`` vertical range and
     (b) shift the terrain so the sim origin sits at the real ground level.
     """
-    logger.info(f"Processing DEM {dem_filepath} to heightmap {output_heightmap_path}")
+    logger.info(f'Processing DEM {dem_filepath} to heightmap {output_heightmap_path}')
     dem_dataset = None
     try:
         dem_dataset = gdal.Open(dem_filepath)
         if dem_dataset is None:
-            raise Exception(f"Failed to open DEM file: {dem_filepath}")
+            raise Exception(f'Failed to open DEM file: {dem_filepath}')
 
         band = dem_dataset.GetRasterBand(1)
         if band is None:
-            raise Exception("Failed to get raster band from DEM")
+            raise Exception('Failed to get raster band from DEM')
 
         width = dem_dataset.RasterXSize
         height = dem_dataset.RasterYSize
         if width != height or width not in _OGRE2_VALID_SIZES:
             raise ValueError(
-                f"DEM must be a square Ogre2-valid raster (one of "
-                f"{_OGRE2_VALID_SIZES}); got {width}x{height}. Reproject "
-                f"via elevation.reproject_dem_to_utm before calling this."
+                f'DEM must be a square Ogre2-valid raster (one of '
+                f'{_OGRE2_VALID_SIZES}); got {width}x{height}. Reproject '
+                f'via elevation.reproject_dem_to_utm before calling this.'
             )
 
         raster_array = band.ReadAsArray()
@@ -94,7 +96,7 @@ def process_dem_to_heightmap(dem_filepath: str, output_heightmap_path: str) -> d
             valid_mask = raster_array != nodata
             if not valid_mask.any():
                 raise ValueError(
-                    f"DEM {dem_filepath} is entirely nodata ({nodata})."
+                    f'DEM {dem_filepath} is entirely nodata ({nodata}).'
                 )
             valid = raster_array[valid_mask]
             min_val = float(valid.min())
@@ -102,9 +104,9 @@ def process_dem_to_heightmap(dem_filepath: str, output_heightmap_path: str) -> d
             invalid_count = int((~valid_mask).sum())
             if invalid_count > 0:
                 logger.info(
-                    f"DEM has {invalid_count} nodata pixels ({nodata}); "
-                    f"excluded from stats and clamped to min={min_val:.1f}m "
-                    f"in the output heightmap."
+                    f'DEM has {invalid_count} nodata pixels ({nodata}); '
+                    f'excluded from stats and clamped to min={min_val:.1f}m '
+                    f'in the output heightmap.'
                 )
         else:
             valid_mask = None
@@ -125,8 +127,8 @@ def process_dem_to_heightmap(dem_filepath: str, output_heightmap_path: str) -> d
         if nodata is not None and origin_raw == nodata:
             origin_val = float(np.mean(raster_array[valid_mask]))
             logger.warning(
-                f"DEM center pixel is nodata; using valid-pixel mean "
-                f"{origin_val:.1f}m as origin elevation."
+                f'DEM center pixel is nodata; using valid-pixel mean '
+                f'{origin_val:.1f}m as origin elevation.'
             )
         else:
             origin_val = origin_raw
@@ -150,13 +152,13 @@ def process_dem_to_heightmap(dem_filepath: str, output_heightmap_path: str) -> d
         )
 
         logger.info(
-            f"DEM processed: min={min_val:.1f}m max={max_val:.1f}m "
-            f"origin={origin_val:.1f}m. Heightmap {width}x{height}. "
-            f"Saved to {output_heightmap_path}"
+            f'DEM processed: min={min_val:.1f}m max={max_val:.1f}m '
+            f'origin={origin_val:.1f}m. Heightmap {width}x{height}. '
+            f'Saved to {output_heightmap_path}'
         )
         return {'min': min_val, 'max': max_val, 'origin': origin_val}
     except Exception as e:
-        logger.error(f"Error processing DEM to heightmap: {e}")
+        logger.error(f'Error processing DEM to heightmap: {e}')
         raise
     finally:
         # Release the GDAL handle whether or not we raised. Without this, an
@@ -231,8 +233,8 @@ def write_heightmap_normal_map(
 
     Image.fromarray(rgb, mode='RGB').save(output_normal_path, format='PNG')
     logger.info(
-        f"Normal map derived from heightmap: {width}x{height} -> "
-        f"{output_normal_path}"
+        f'Normal map derived from heightmap: {width}x{height} -> '
+        f'{output_normal_path}'
     )
 
 
@@ -254,7 +256,7 @@ def sample_dem_elevation_utm(
     """
     ds = gdal.Open(dem_filepath)
     if ds is None:
-        raise Exception(f"Failed to open DEM: {dem_filepath}")
+        raise Exception(f'Failed to open DEM: {dem_filepath}')
     try:
         gt = ds.GetGeoTransform()
         # gt = [origin_x, pixel_w, 0, origin_y, 0, pixel_h (typically negative)]
@@ -287,7 +289,7 @@ def open_dem_sampler(dem_filepath: str, nodata_fallback: float = None):
     """
     ds = gdal.Open(dem_filepath)
     if ds is None:
-        raise Exception(f"Failed to open DEM: {dem_filepath}")
+        raise Exception(f'Failed to open DEM: {dem_filepath}')
     try:
         gt = ds.GetGeoTransform()
         width = ds.RasterXSize

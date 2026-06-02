@@ -21,7 +21,7 @@ try:
     from terraforge.cli import _resolve_texture_paths, _setup_fuel_wrappers
 except Exception as exc:  # pragma: no cover - depends on optional geo deps
     pytest.skip(
-        f"terraforge.cli unavailable ({exc})", allow_module_level=True
+        f'terraforge.cli unavailable ({exc})', allow_module_level=True
     )
 
 

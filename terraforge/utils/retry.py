@@ -38,7 +38,7 @@ def retry_call(
     in the run log.
     """
     if attempts < 1:
-        raise ValueError("attempts must be >= 1")
+        raise ValueError('attempts must be >= 1')
     last_exc = None
     delay = initial_delay
     for i in range(1, attempts + 1):
@@ -49,8 +49,8 @@ def retry_call(
             if i == attempts:
                 break
             logger.warning(
-                f"{label}: attempt {i}/{attempts} failed ({type(e).__name__}: {e}); "
-                f"retrying in {delay:.1f}s"
+                f'{label}: attempt {i}/{attempts} failed ({type(e).__name__}: {e}); '
+                f'retrying in {delay:.1f}s'
             )
             time.sleep(delay)
             delay = min(delay * backoff, max_delay)

@@ -115,7 +115,7 @@ def test_masks_never_read_jpeg_output(tmp_path, monkeypatch):
     os.makedirs(cache_dir, exist_ok=True)
     # Match the naming scheme used in run_generate_world:
     #   f"loc_{lat:.4f}_{lon:.4f}_r{int(radius)}_texture"
-    tex_dir = os.path.join(cache_dir, 'loc_37.7749_-122.4194_r500_texture')
+    tex_dir = os.path.join(cache_dir, 'loc_37.7749_-122.4194_r500.0_texture')
     os.makedirs(tex_dir, exist_ok=True)
     png_path = os.path.join(tex_dir, 'satellite_texture.png')
     Image.new('RGB', (64, 64), (96, 160, 64)).save(png_path)
@@ -129,17 +129,17 @@ def test_masks_never_read_jpeg_output(tmp_path, monkeypatch):
         )
 
     # Verify each recorded path is the PNG cache, never the JPEG.
-    assert seen_paths['cloud_mask'], "cloud_mask builder was not called"
-    assert seen_paths['foliage_mask'], "foliage_mask builder was not called"
+    assert seen_paths['cloud_mask'], 'cloud_mask builder was not called'
+    assert seen_paths['foliage_mask'], 'foliage_mask builder was not called'
     for stage, paths in seen_paths.items():
         for p in paths:
             assert p.endswith('.png'), (
-                f"{stage} received non-PNG path {p}; masks must read "
-                f"the lossless source, not the JPEG render output."
+                f'{stage} received non-PNG path {p}; masks must read '
+                f'the lossless source, not the JPEG render output.'
             )
             assert 'materials/textures' not in p, (
-                f"{stage} received the render-output path {p}; masks "
-                f"must read the cache, not the world media dir."
+                f'{stage} received the render-output path {p}; masks '
+                f'must read the cache, not the world media dir.'
             )
 
 
@@ -162,6 +162,11 @@ def test_source_and_output_paths_must_not_alias(tmp_path, monkeypatch):
     monkeypatch.setattr(cli.osm, 'download_osm_trees', lambda *a, **kw: None)
     monkeypatch.setattr(cli.osm, 'download_osm_roads', lambda *a, **kw: None)
     monkeypatch.setattr(cli.osm, 'download_osm_parking', lambda *a, **kw: None)
+    # The alias guard sits after DEM sizing/reprojection; neutralise those
+    # (they would otherwise fail on the no-op DEM download) so the
+    # AssertionError is what surfaces.
+    monkeypatch.setattr(cli, '_choose_heightmap_size', lambda *a, **kw: 65)
+    monkeypatch.setattr(cli.elevation, 'reproject_dem_to_utm', lambda *a, **kw: None)
 
     with pytest.raises(AssertionError, match='alias the same file'):
         cli.run_generate_world(

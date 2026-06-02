@@ -16,7 +16,7 @@ class CoordinateConverter:
         self.wgs84_to_utm_transformer = Transformer.from_crs(
             'EPSG:4326', self.utm_crs_string, always_xy=True)
         self.utm_to_wgs84_transformer = Transformer.from_crs(
-            self.utm_crs_string, "EPSG:4326", always_xy=True)
+            self.utm_crs_string, 'EPSG:4326', always_xy=True)
 
         self.origin_utm_x, self.origin_utm_y = self.wgs84_to_utm_transformer.transform(lon, lat)
         logger.info(
@@ -32,8 +32,8 @@ class CoordinateConverter:
 
     @staticmethod
     def _get_utm_crs_string(utm_zone, northern_hemisphere):
-        prefix = "326" if northern_hemisphere else "327"
-        return f"EPSG:{prefix}{utm_zone:02d}"
+        prefix = '326' if northern_hemisphere else '327'
+        return f'EPSG:{prefix}{utm_zone:02d}'
 
     @staticmethod
     def _determine_utm_zone(longitude_degrees):
@@ -49,8 +49,7 @@ class CoordinateConverter:
         return utm_x, utm_y
 
     def utm_to_local_gazebo(self, utm_coords: tuple) -> tuple:
-        """
-        Convert UTM (x, y) coordinates to local Gazebo coordinates (x, y, z=0).
+        """Convert UTM (x, y) coordinates to local Gazebo coordinates (x, y, z=0).
 
         The origin of the local Gazebo frame is the origin_location_wgs84 specified
         during initialization. Z-coordinate is set to 0 here, elevation is handled
@@ -63,8 +62,7 @@ class CoordinateConverter:
         return local_x, local_y, local_z
 
     def wgs84_to_gazebo(self, location_wgs84: tuple) -> tuple:
-        """
-        Convert WGS84 (lat, lon) directly to local Gazebo coordinates (x, y, z=0).
+        """Convert WGS84 (lat, lon) directly to local Gazebo coordinates (x, y, z=0).
 
         This is a convenience function combining WGS84 to UTM and UTM to local Gazebo
         conversion.
@@ -86,8 +84,7 @@ class CoordinateConverter:
         return lat, lon
 
     def gazebo_to_wgs84(self, gazebo_coords: tuple) -> tuple:
-        """
-        Convert local Gazebo coordinates (x, y) back to WGS84 (latitude, longitude).
+        """Convert local Gazebo coordinates (x, y) back to WGS84 (latitude, longitude).
 
         This is a convenience function combining Gazebo to UTM and UTM to WGS84 conversion.
         """
