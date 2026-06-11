@@ -29,6 +29,17 @@ Rationale for an RGB-only canopy detector (no NIR / NDVI):
     standard deviation (sigma) check distinguishes the dappling pattern
     of canopy from flat grass — canopies run sigma(L) ≈ 0.06-0.15 at
     native 0.3-1 m/px, lawns sit at sigma(L) ≈ 0.01-0.02.
+  * NOTE on the EXG variant used: the canonical index (Woebbecke et al.
+    1995; Meyer & Neto 2008) is computed on chromatic coordinates
+    (r = R/(R+G+B), ...), which makes it illumination-invariant. This
+    module uses raw [0,1] RGB, so the index scales linearly with
+    luminance: the L cap compensates on the bright side (sunlit lawns,
+    green roofs) but the strict gate is effectively 3-4x harsher on dark
+    shadowed canopy. That bias is deliberate — the loose envelope +
+    geodesic growth + OSM positive union recover most shadowed canopy,
+    and the thresholds below were tuned against this variant. If you
+    switch to chromatic EXG, re-tune EXG_STRICT/EXG_LOOSE (chromatic
+    units run ≈ index/3L).
 
 Threshold tuning notes mirror cloud_mask.py: the constructor logs EXG
 and sigma percentiles at each pipeline stage so operators can tune
