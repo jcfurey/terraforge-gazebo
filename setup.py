@@ -8,9 +8,14 @@ package_name = 'terraforge_gazebo'
 setup(
     name=package_name,
     version='0.1.0',
-    packages=find_packages(exclude=['test', 'test.*', 'experimental', 'experimental.*']),
+    # templates/ has no __init__.py, so find_packages() misses it; list it
+    # explicitly or setuptools warns it is "importable but not distributed"
+    # on every build (and newer setuptools may stop shipping the .j2 files).
+    packages=find_packages(
+        exclude=['test', 'test.*', 'experimental', 'experimental.*'],
+    ) + ['terraforge.data_processing.templates'],
     package_data={
-        'terraforge.data_processing': ['templates/*.j2'],
+        'terraforge.data_processing.templates': ['*.j2'],
     },
     include_package_data=True,
     data_files=[

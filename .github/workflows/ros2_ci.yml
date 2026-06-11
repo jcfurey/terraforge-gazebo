@@ -24,8 +24,10 @@ jobs:
           # "No module named pip").
           apt-get install -y python3-pip
           rosdep update
-          rosdep install --from-paths src --ignore-src -y \
-              || apt-get install -y python3-gdal python3-pyqt6
+          # No fallback `|| apt-get install ...` here: it only existed to
+          # paper over the bogus ament_python buildtool_depend (removed from
+          # package.xml), and it hid genuine dependency-resolution failures.
+          rosdep install --from-paths src --ignore-src -y
 
       - name: Install pip-only dependencies
         run: |
