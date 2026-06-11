@@ -6,10 +6,13 @@
          Vicksburg-scale world (370 static collisions + heightmap). 4 ms is
          comfortable for plain Bullet on a ground vehicle and restores RTF
          close to 1.0 without noticeably degrading wheel/contact fidelity.
-         The engine is selected via the <engine> child of the physics-system
-         <plugin> below, so no `type` attribute is needed here (and the
-         previous `type='ignored'` value was not a valid SDF physics type). -->
-    <physics name='4ms'>
+         The `type` attribute is REQUIRED by the SDF spec — omitting it makes
+         libsdformat reject the whole world ("Required attribute[type] in
+         element[physics] is not specified"). gz-sim itself ignores the value
+         (the engine is selected via the <engine> child of the physics-system
+         <plugin> below); 'bullet' is used so the declaration matches the
+         engine actually loaded. -->
+    <physics name='4ms' type='bullet'>
       <max_step_size>0.004</max_step_size>
       <real_time_factor>1.0</real_time_factor>
     </physics>
@@ -31,20 +34,22 @@
 
     <!-- Physics engine: plain `bullet` (NOT bullet-featherstone, NOT
          gazebo's default dartsim). The two engines we ruled out:
-           - bullet-featherstone uses an articulated-body solver that
-             collapses anisotropic friction (<mu1>/<mu2> become a single
-             isotropic μ) and applies joint velocity commands as soft PD
-             targets. On a skid-steer rover, both behaviours conspire to
-             slave all four wheels to chassis motion regardless of
-             cmd_vel — the chassis never yaws.
-           - dartsim does not implement SDF <heightmap> or <polyline>
-             collision, which originally forced the flat-ground-plane
-             hack on Vicksburg.
+           - bullet-featherstone cannot rotate a skid-steer / diff-drive
+             base in place: forward/back tracks fine but commanded yaw
+             only produces wheel slip (upstream gz-physics issue #697,
+             reproducible on ROS 2 Jazzy with the stock diff_drive.sdf,
+             still open as of gz-physics 7). Mechanically its btMultiBody
+             contact path ignores <fdir1>, so the wheel-frame friction
+             anisotropy that skid-steering depends on cannot be expressed.
+           - dartsim DOES support heightmap collision in gz-physics 7
+             (see ground_plane comment) but does not implement
+             <polyline> collision, which originally forced the
+             flat-ground-plane hack on Vicksburg.
          Plain bullet (Bullet's discrete rigid-body solver) honours
          <mu1>/<mu2> + <kp>/<kd> the way ODE used to, so the rover
-         actually skid-steers; it doesn't support heightmap collision
-         either, but that's already worked around with the flat
-         <ground_plane> below. Ships with gz-physics-7 on ROS 2 Jazzy
+         actually skid-steers; it doesn't support heightmap collision,
+         which is worked around with the flat <ground_plane> below.
+         Ships with gz-physics-7 on ROS 2 Jazzy
          (`libgz-physics-bullet-plugin.so` in `ros-jazzy-gz-physics-vendor`).
          The <filename> value must be the library basename without `lib`
          prefix or `.so` suffix. -->
@@ -116,19 +121,24 @@
     </scene>
 
     <!-- Flat collision plane — the ONLY collision surface in this world.
-         None of the gz-sim physics backends (dartsim, bullet,
-         bullet-featherstone) implement AttachHeightmapShapeFeature, so
-         any <heightmap> under <collision> is silently dropped at world
-         load with:
+         The bullet engine selected by this template does not implement
+         AttachHeightmapShapeFeature (nor does bullet-featherstone), so
+         any <heightmap> under <collision> is dropped at world load with:
            [Err] Unsupported collision geometry type [6] for Link [link]
            [Dbg] Heightmaps will be ignored.
-         The heightmap is therefore a VISUAL-only surface — the rover
-         drives on this flat plane at z=0 while seeing the elevated
-         terrain around it. Buildings / trees float or sink relative to
-         this plane based on their DEM elevation; that's cosmetic and
-         doesn't affect physics.
-         Upgrade path: pre-triangulate the heightmap to an STL and use
-         <mesh> collision (all three engines support that). -->
+         NOTE: dartsim (the gz-sim default engine) DOES support heightmap
+         collision in gz-physics 7 / Harmonic — see the plugin feature
+         table (heightmap::AttachHeightmapShapeFeature). Bullet is chosen
+         here for skid-steer fidelity (see the physics-system comment), so
+         the heightmap stays a VISUAL-only surface: the rover drives on
+         this flat plane at z=0 while seeing the elevated terrain around
+         it. Buildings / trees float or sink relative to this plane based
+         on their DEM elevation; that's cosmetic and doesn't affect
+         physics.
+         Upgrade paths: switch <engine> to dartsim and add a heightmap
+         <collision> (works upstream, costs skid-steer correctness), or
+         pre-triangulate the heightmap to an STL and use <mesh> collision
+         (all three engines support that). -->
     <model name='ground_plane'>
       <static>true</static>
       <pose>0 0 0 0 0 0</pose>
@@ -235,7 +245,7 @@
 
     {% if fuel_tree_includes_sdf %}
     <!-- ── Fuel-mode trees (top-level includes) ──────────────────────────
-         Emitted only when `--foliage-style fuel` was passed to
+         Emitted only when the `foliage-style fuel` CLI flag was passed to
          `terraforge generate-world`. Each `<include>` resolves
          `model://tree_fuel_<variant>` against `GZ_SIM_RESOURCE_PATH` —
          the workspace-committed `models_fuel/` wrappers, which in turn
@@ -273,10 +283,12 @@
     <!-- ── Native gz-sim level streaming ─────────────────────────────────
          SDFormat <level>/<performer> elements DO work in single-process
          gz-sim 8, but only when:
-           (a) the world is launched with `gz sim --levels` (off by
+           (a) the world is launched with `gz sim` + the `levels` flag
+               (XML forbids double hyphens inside comments, so flags are
+               written without their leading dashes here; off by
                default — SimulationRunner gates LevelManager on
                ServerConfig::UseLevels(), which is only true when the
-               CLI flag or `--network-role` is set), AND
+               CLI flag or `network-role` is set), AND
            (b) the performer/level definitions sit inside a
                <plugin name="gz::sim" filename="dummy"> block (the literal
                `dummy` filename is load-bearing: gz-sim's SDF parser

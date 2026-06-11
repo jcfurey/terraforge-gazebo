@@ -9,11 +9,14 @@ from terraforge.utils.logging import logger
 
 gdal.UseExceptions()
 
-# Ogre2's heightmap rendering requires the source PNG to have dimensions of
-# 2^n + 1 on each side (e.g. 65, 129, 257, 513, 1025, 2049, 4097). Otherwise
-# the terrain geometry fails to build and the world renders with no ground
-# mesh at all ("Heightmap final sampling must satisfy 2^n" + "Cannot attach
-# a null geometry object"). The DEM is reprojected upstream (in elevation.py)
+# Ogre2 heightmap size rule, per gz-rendering8 Ogre2Heightmap.cc: the
+# native requirement is 2^n samples per side; 2^n + 1 inputs (the classic
+# Ogre1 convention used here: 65, 129, ..., 4097) are detected as legacy
+# format and accepted with a gzwarn, cropping the last row + column
+# (≈0.1% of extent at 1025 — cosmetically negligible). Anything else
+# hard-fails and the world renders with no ground mesh at all
+# ("Heightmap final sampling must satisfy 2^n" + "Cannot attach a null
+# geometry object"). The DEM is reprojected upstream (in elevation.py)
 # to a UTM grid at exactly one of these sizes, so this module just has to
 # verify.
 #
@@ -211,14 +214,18 @@ def write_heightmap_normal_map(
     # World-space surface gradient in metres/metre (dimensionless slope).
     dzdx = gx * dz_per_unit / px_size_m
     dzdy = gy * dz_per_unit / px_size_m
-    # Ogre2/OpenGL tangent-space normal map convention:
-    #   east-rising  -> nx > 0  -> R > 128
-    #   north-rising -> ny > 0  -> G > 128
-    # dH/d(pixel_col) == gx: east-rising has gx > 0, so nx = dzdx.
-    # dH/d(pixel_row) == gy: north-rising has gy < 0 (rows grow south),
-    # so ny = -dzdy flips sign.
-    nx = dzdx
-    ny = -dzdy
+    # Surface normal of z = h(x, y) is proportional to
+    # (-dh/dx, -dh/dy, 1): a slope leans its normal DOWNHILL, never uphill.
+    #   east-rising slope  -> normal leans west  -> nx < 0 -> R < 128
+    #   north-rising slope -> normal leans south -> ny < 0 -> G < 128
+    # dH/d(pixel_col) == gx == dh/dx_world (columns grow east): nx = -dzdx.
+    # dH/d(pixel_row) == gy == -dh/dy_world (rows grow south), so
+    # dh/dy_world = -dzdy and ny = -(-dzdy) = dzdy.
+    # (An earlier revision had both signs inverted — normals leaned
+    # uphill, so sun-facing slopes shaded dark: the classic
+    # inverted-emboss artifact.)
+    nx = -dzdx
+    ny = dzdy
     nz = np.ones_like(nx)
     norm = np.sqrt(nx * nx + ny * ny + nz * nz)
     nx /= norm

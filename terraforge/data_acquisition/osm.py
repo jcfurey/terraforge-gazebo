@@ -7,18 +7,35 @@ from terraforge.data_acquisition.elevation import _calculate_bounds_wgs84
 from terraforge.utils.logging import logger
 from terraforge.utils.retry import retry_call
 
+try:
+    # Not re-exported at package level as of osmnx 2.1; the private module
+    # has been its stable home since 1.3.
+    from osmnx._errors import InsufficientResponseError
+except ImportError:  # future osmnx relocation — degrade to retrying
+    InsufficientResponseError = ()
+
 
 def _download(location, radius_meters, tags, output_path, label):
     bbox = _calculate_bounds_wgs84(location, radius_meters)
+
+    def fetch():
+        try:
+            return ox.features_from_bbox(bbox=bbox, tags=tags)
+        except InsufficientResponseError:
+            # "No matching features" is a definitive empty answer from
+            # Overpass, not a transient failure — retrying it just burns
+            # ~6 s of backoff per empty layer and logs misleading warnings.
+            return None
+
     # Overpass commonly 429s on bursty queries (we issue ~4 in a row).
     # A short backoff absorbs that without the caller seeing a failure.
     gdf = retry_call(
-        lambda: ox.features_from_bbox(bbox=bbox, tags=tags),
+        fetch,
         attempts=3,
         initial_delay=2.0,
         label=label,
     )
-    if gdf.empty:
+    if gdf is None or gdf.empty:
         logger.info(f'{label}: 0 features in {radius_meters}m radius')
         return 0
     gdf.to_file(output_path, driver='GeoJSON')

@@ -29,7 +29,7 @@ Beta. Packaged as an **ament_python** ROS 2 package called `terraforge_gazebo`, 
 - **Seven satellite tile providers** with a registry (`esri`, `sentinel2`, `usgs_naip`, `gibs_bluemarble`, `mapbox`, `maptiler`, `bing`). Esri is the recommended keyless default. Mosaics are precision-cropped to the exact user bbox before saving.
 - **Strict UTM coordinate handling** — bbox math and asset placement use the local UTM zone (EPSG:326XX / 327XX), not Web Mercator, so feature positions match the textured terrain to within pyproj precision at any latitude.
 - **Portable output**: each generated world ships with its own `models/` + `media_<world-name>/` subdirectories, loaded via `GZ_SIM_RESOURCE_PATH` + baked-in `file://` paths.
-- **Physics-ready SDF template**: loads plain `bullet`, the IMU + Contact systems, and a flat collision ground plane (no gz-sim physics backend supports SDF heightmap collision). Plain bullet — not bullet-featherstone — because featherstone's articulated-body solver collapses anisotropic friction and slaves wheel velocities to chassis motion, breaking skid-steer yaw. Workspace rovers drive on flat ground while the heightmap renders visually.
+- **Physics-ready SDF template**: loads plain `bullet`, the IMU + Contact systems, and a flat collision ground plane (the bullet engines don't support SDF heightmap collision; dartsim does in gz-physics 7, but is not used here). Plain bullet — not bullet-featherstone — because featherstone cannot yaw a skid-steer base in place (its contact path ignores `fdir1`, so wheel-frame friction anisotropy is inexpressible; upstream gz-physics issue #697). Workspace rovers drive on flat ground while the heightmap renders visually.
 - **ROS 2 integration**: a `spawn_world.launch.py` that wraps `ros_gz_sim`'s `gz_sim.launch.py`.
 
 ## Use inside a ROS 2 Jazzy workspace
@@ -61,14 +61,17 @@ export SATELLITE_TEXTURE_SOURCE=esri       # or pass --tile-provider on the CLI
 #   export MAPTILER_API_KEY='...'          # maptiler
 #   export BING_MAPS_API_KEY='...'         # bing
 
-# Generate a world for downtown San Francisco, 500 m radius
-terraforge generate-world \
+# Generate a world for downtown San Francisco, 500 m radius.
+# Executables live in lib/terraforge_gazebo (ROS convention), so invoke
+# them through `ros2 run` — the bare `terraforge` command is not on PATH
+# in a colcon workspace.
+ros2 run terraforge_gazebo terraforge generate-world \
     --latitude 37.7749 --longitude -122.4194 --radius 500 \
     --output-dir /tmp/sf --world-name sf \
     --tile-provider esri
 
 # Enumerate available providers + their attribution requirements
-terraforge list-tile-providers
+ros2 run terraforge_gazebo terraforge list-tile-providers
 
 # Launch it in Gazebo Harmonic
 ros2 launch terraforge_gazebo spawn_world.launch.py world:=/tmp/sf/sf.world
@@ -82,10 +85,14 @@ cd terraforge-gazebo
 pip install -r requirements.txt
 pip install -e .
 export SATELLITE_TEXTURE_SOURCE=esri       # keyless default
-terraforge generate-world --latitude 37.7749 --longitude -122.4194 \
+# Invoke as a module: setup.cfg routes the console scripts into
+# lib/terraforge_gazebo/ (so `ros2 run` finds them in a colcon
+# workspace), which means a plain pip install never puts a bare
+# `terraforge` command on PATH.
+python3 -m terraforge generate-world --latitude 37.7749 --longitude -122.4194 \
     --radius 500 --output-dir /tmp/sf --world-name sf
-# or launch the GUI
-terraforge-gui
+# or launch the GUI (requires `pip install -e .[gui]` for PyQt6)
+python3 -m terraforge.ui.main_window
 ```
 
 ## Output layout

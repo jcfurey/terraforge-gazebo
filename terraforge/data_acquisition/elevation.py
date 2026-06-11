@@ -88,6 +88,13 @@ def _calculate_bounds_wgs84(location: tuple, radius_meters: float) -> tuple:
     return (west_lon, south_lat, east_lon, north_lat)
 
 
+# SRTM coverage: the shuttle flew a 57° inclination orbit, so the dataset
+# spans 60°N to 56°S (USGS EROS SRTM mission summary). Outside that band
+# there is simply no tile to fetch.
+SRTM_LAT_NORTH_LIMIT = 60.0
+SRTM_LAT_SOUTH_LIMIT = -56.0
+
+
 def download_dem(location: tuple, radius_meters: float, output_path: str):
     """Download SRTM3 DEM for ``location`` + ``radius_meters`` as GeoTIFF."""
     from terraforge.utils.retry import retry_call
@@ -97,6 +104,19 @@ def download_dem(location: tuple, radius_meters: float, output_path: str):
         f'to {output_path}'
     )
     bounds = _calculate_bounds_wgs84(location, radius_meters)
+    # Guard here (not in _calculate_bounds_wgs84, which OSM/tile fetchers
+    # share and which has no SRTM limitation — a user-supplied dem-file
+    # override legitimately enables high-latitude worlds). Without this,
+    # an out-of-coverage request dies inside the elevation package with an
+    # obscure tile-fetch error that gets retried three times first.
+    _, south_lat, _, north_lat = bounds
+    if north_lat > SRTM_LAT_NORTH_LIMIT or south_lat < SRTM_LAT_SOUTH_LIMIT:
+        raise RuntimeError(
+            f'Requested bbox (lat {south_lat:.4f}° to {north_lat:.4f}°) is '
+            f'outside SRTM coverage ({SRTM_LAT_SOUTH_LIMIT:.0f}° to '
+            f'{SRTM_LAT_NORTH_LIMIT:.0f}°). Supply your own DEM with the '
+            f'dem-file CLI option to generate worlds at this latitude.'
+        )
 
     def _clip():
         elevation.clip(bounds=bounds, output=output_path, product='SRTM3')

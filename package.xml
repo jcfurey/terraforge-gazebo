@@ -8,7 +8,11 @@
   <maintainer email="dev@example.com">TerraForge Contributors</maintainer>
   <license>MIT</license>
 
-  <buildtool_depend>ament_python</buildtool_depend>
+  <!-- No <buildtool_depend>ament_python</buildtool_depend> here: there is no
+       released package (and no rosdep key) named ament_python, so declaring
+       it makes `rosdep install` fail on a clean host. The ament_python build
+       type is selected purely via the <export><build_type> tag below and is
+       handled by colcon-ros itself. -->
 
   <exec_depend>ros_gz_sim</exec_depend>
   <exec_depend>python3-click</exec_depend>

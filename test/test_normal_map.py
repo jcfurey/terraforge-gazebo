@@ -48,8 +48,8 @@ def test_flat_terrain_produces_flat_normals(tmp_path):
 def test_east_sloping_terrain_shifts_nx_channel(tmp_path):
     hm = tmp_path / 'hm.png'
     nm = tmp_path / 'nm.png'
-    # Ramp climbs east (world +X). OpenGL normal-map convention: east-
-    # rising -> R > 128.
+    # Ramp climbs east (world +X). The geometric normal of an east-rising
+    # slope leans WEST (normals lean downhill): R < 128.
     h = 65
     w = 65
     ramp = np.tile(np.linspace(0, 65535, w, dtype=np.float32), (h, 1))
@@ -60,7 +60,7 @@ def test_east_sloping_terrain_shifts_nx_channel(tmp_path):
     with Image.open(str(nm)) as img:
         arr = np.asarray(img)
     interior = arr[1:-1, 1:-1]
-    assert interior[..., 0].mean() > 136, interior[..., 0].mean()
+    assert interior[..., 0].mean() < 120, interior[..., 0].mean()
     assert abs(interior[..., 1].mean() - 128) < 3
     assert interior[..., 2].mean() < 255
 
@@ -71,7 +71,8 @@ def test_north_sloping_terrain_shifts_ny_channel(tmp_path):
     h = 65
     w = 65
     # Rows grow south in PNG coords. Terrain rising NORTH means row 0
-    # (top of image) is the high point. Convention: north-rising -> G > 128.
+    # (top of image) is the high point. A north-rising slope's normal
+    # leans SOUTH (downhill): G < 128.
     ramp = np.tile(np.linspace(65535, 0, h, dtype=np.float32)[:, None], (1, w))
     _write_heightmap(str(hm), ramp.astype(np.uint16))
     write_heightmap_normal_map(
@@ -80,7 +81,7 @@ def test_north_sloping_terrain_shifts_ny_channel(tmp_path):
     with Image.open(str(nm)) as img:
         arr = np.asarray(img)
     interior = arr[1:-1, 1:-1]
-    assert interior[..., 1].mean() > 136, interior[..., 1].mean()
+    assert interior[..., 1].mean() < 120, interior[..., 1].mean()
     assert abs(interior[..., 0].mean() - 128) < 3
 
 

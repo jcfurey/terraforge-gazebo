@@ -12,11 +12,20 @@ don't duplicate them or import from each other.
 import numpy as np
 from PIL import Image, ImageFilter
 
-# Geodesic dilation iteration cap. Each iteration grows the seed by 2 px
-# (5x5 max filter), so 50 iters reaches ~100 px from any seed — plenty for
-# a feature spanning hundreds of pixels in a 500x500 mosaic.
-GEODESIC_MAX_ITERS = 50
-GEODESIC_FILTER_PX = 5  # MaxFilter window size; must be odd.
+# Reconstruction-by-dilation per Vincent (1993), "Morphological grayscale
+# reconstruction in image analysis", IEEE TIP 2(2): the elementary geodesic
+# dilation is a UNIT (3x3) dilation intersected with the envelope, iterated
+# to stability. The structuring element must stay 3x3: a larger per-step
+# dilation (an earlier revision used 5x5) jumps 1-px-wide background
+# corridors in the envelope before the intersection can stop it, connecting
+# regions that are not geodesically connected — at the 5 m/px mask
+# resolution that meant leaking across any sub-10 m road or stream gap.
+GEODESIC_FILTER_PX = 3  # MaxFilter window size; must stay 3 (see above).
+# Iteration cap: 3x3 grows 1 px per iteration, so 200 iters reaches 200 px
+# (~1 km at 5 m/px) from the nearest seed before truncating — beyond any
+# single connected canopy/cloud region a radius-capped world can contain.
+# Callers log the iteration count, so hitting the cap is observable.
+GEODESIC_MAX_ITERS = 200
 
 
 def open_u8(arr_u8: np.ndarray, r: int) -> np.ndarray:
