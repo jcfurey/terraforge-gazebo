@@ -16,6 +16,12 @@ def setup_logger(name, log_level=logging.INFO):
     """
     logger = logging.getLogger(name)
     logger.setLevel(log_level)
+    # Every logger configured here gets its own stdout handler, so stop
+    # propagation to ancestors: 'terraforge.gui' is a dotted child of
+    # 'terraforge' (the GUI imports cli, so both exist with handlers),
+    # and without this every GUI log line printed twice. Also keeps a
+    # host application's root-logger config from re-emitting our lines.
+    logger.propagate = False
 
     if not logger.handlers:
         stream_handler = logging.StreamHandler(sys.stdout)

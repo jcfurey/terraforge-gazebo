@@ -61,14 +61,17 @@ export SATELLITE_TEXTURE_SOURCE=esri       # or pass --tile-provider on the CLI
 #   export MAPTILER_API_KEY='...'          # maptiler
 #   export BING_MAPS_API_KEY='...'         # bing
 
-# Generate a world for downtown San Francisco, 500 m radius
-terraforge generate-world \
+# Generate a world for downtown San Francisco, 500 m radius.
+# Executables live in lib/terraforge_gazebo (ROS convention), so invoke
+# them through `ros2 run` — the bare `terraforge` command is not on PATH
+# in a colcon workspace.
+ros2 run terraforge_gazebo terraforge generate-world \
     --latitude 37.7749 --longitude -122.4194 --radius 500 \
     --output-dir /tmp/sf --world-name sf \
     --tile-provider esri
 
 # Enumerate available providers + their attribution requirements
-terraforge list-tile-providers
+ros2 run terraforge_gazebo terraforge list-tile-providers
 
 # Launch it in Gazebo Harmonic
 ros2 launch terraforge_gazebo spawn_world.launch.py world:=/tmp/sf/sf.world
@@ -82,10 +85,14 @@ cd terraforge-gazebo
 pip install -r requirements.txt
 pip install -e .
 export SATELLITE_TEXTURE_SOURCE=esri       # keyless default
-terraforge generate-world --latitude 37.7749 --longitude -122.4194 \
+# Invoke as a module: setup.cfg routes the console scripts into
+# lib/terraforge_gazebo/ (so `ros2 run` finds them in a colcon
+# workspace), which means a plain pip install never puts a bare
+# `terraforge` command on PATH.
+python3 -m terraforge generate-world --latitude 37.7749 --longitude -122.4194 \
     --radius 500 --output-dir /tmp/sf --world-name sf
-# or launch the GUI
-terraforge-gui
+# or launch the GUI (requires `pip install -e .[gui]` for PyQt6)
+python3 -m terraforge.ui.main_window
 ```
 
 ## Output layout
