@@ -532,7 +532,11 @@ def _load_building_polygons_gazebo(buildings_geojson_path: str, converter, world
                 polys.append(shape_local)
             elif isinstance(shape_local, shapely.geometry.MultiPolygon):
                 polys.extend(shape_local.geoms)
-        except Exception:
+        except Exception as e:
+            # Defensive per-feature skip (tree placement just loses one
+            # exclusion polygon), but log it so malformed OSM extracts are
+            # diagnosable instead of silently shrinking the mask.
+            logger.debug(f'Skipping building polygon for tree exclusion: {e}')
             continue
     return polys
 
@@ -727,11 +731,19 @@ def process_osm_trees_to_sdf(osm_filepath: str, models_dir: str, origin_wgs84: t
       allow `<include>` inside `<model>`) and instead emits them at world
       scope, with a per-tile `<ref>` so level streaming still works.
     """
-    if not os.path.exists(osm_filepath):
-        logger.info('No OSM foliage file; skipping trees stage.')
-        return []
-
-    logger.info(f'Processing OSM foliage from {osm_filepath}')
+    # A missing OSM foliage file is NOT a reason to skip the whole stage:
+    # the image-based vegetation fill below exists precisely for areas where
+    # OSM has no foliage features (Overpass only returns features whose
+    # nodes fall inside the bbox, so e.g. the middle of a large tagged park
+    # comes back empty). Returning early here used to produce zero trees on
+    # heavily wooded worlds whenever the OSM layer was empty.
+    have_osm_foliage = os.path.exists(osm_filepath)
+    if not have_osm_foliage:
+        logger.info(
+            'No OSM foliage file; scattering from satellite imagery alone.'
+        )
+    else:
+        logger.info(f'Processing OSM foliage from {osm_filepath}')
     os.makedirs(models_dir, exist_ok=True)
     rng = random.Random(seed)
 
@@ -758,8 +770,11 @@ def process_osm_trees_to_sdf(osm_filepath: str, models_dir: str, origin_wgs84: t
             world_half_extent_m, world_half_extent_m,
         )
 
-    with open(osm_filepath, encoding='utf-8') as f:
-        osm_data = json.load(f)
+    if have_osm_foliage:
+        with open(osm_filepath, encoding='utf-8') as f:
+            osm_data = json.load(f)
+    else:
+        osm_data = {'features': []}
 
     def in_world(x, y):
         if world_half_extent_m is None:

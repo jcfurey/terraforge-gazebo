@@ -374,9 +374,16 @@ def process_osm_buildings_to_sdf(osm_filepath: str, models_dir: str, origin_wgs8
                     # under its footprint — stops buildings on slopes from
                     # floating on one side.
                     if elevation_sampler is not None:
+                        # Sample vertices spread evenly around the ring (cap
+                        # 16) rather than the first 8 in ring order — OSM
+                        # rings start at an arbitrary vertex, so the first 8
+                        # can cluster on one side of a large footprint and
+                        # miss the downhill corner entirely.
+                        ring = list(polygon_centered.exterior.coords)[:-1]
+                        step = max(1, len(ring) // 16)
                         samples = [
                             elevation_sampler(x + pose_xy[0], y + pose_xy[1])
-                            for x, y in list(polygon_centered.exterior.coords)[:8]
+                            for x, y in ring[::step][:16]
                         ]
                         pose_z = min(samples) if samples else 0.0
                     else:

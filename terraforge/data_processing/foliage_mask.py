@@ -43,7 +43,6 @@ Known false-positive / false-negative classes:
 """
 
 import json
-import math
 import os
 from typing import Optional
 
@@ -107,14 +106,29 @@ _OSM_POSITIVE_TAGS = {
 
 
 def _box_mean(arr_f32: np.ndarray, window_px: int) -> np.ndarray:
-    """Mean of a WxW window around each pixel using PIL's BoxBlur.
+    """Mean of a WxW window around each pixel, replicate edges.
 
-    Pillow's BoxBlur takes a radius, not a diameter, so radius=(window-1)/2.
-    Edges replicate. Returned array has the same shape + dtype as input.
+    Implemented with a numpy summed-area table instead of PIL's BoxBlur:
+    Pillow only learned to filter 32-bit float ('F') images with BoxBlur in
+    11.0, and ROS 2 Jazzy / Ubuntu 24.04 ships python3-pil 10.2 — there the
+    BoxBlur call raised "image has wrong mode", which silently degraded the
+    whole rgb-osm foliage mask to the legacy bare-EXG path on the package's
+    primary target platform. Window semantics match BoxBlur:
+    radius = (window-1)//2, so the box spans 2*radius+1 pixels.
     """
     radius = max(1, (window_px - 1) // 2)
-    img = Image.fromarray(arr_f32, mode='F').filter(ImageFilter.BoxBlur(radius))
-    return np.asarray(img, dtype=np.float32)
+    win = 2 * radius + 1
+    h, w = arr_f32.shape
+    # float64 accumulation: a float32 cumsum over megapixel images loses
+    # enough precision that E[L^2] - E[L]^2 goes visibly wrong.
+    padded = np.pad(arr_f32.astype(np.float64), radius, mode='edge')
+    sat = np.zeros((padded.shape[0] + 1, padded.shape[1] + 1), dtype=np.float64)
+    np.cumsum(padded, axis=0, out=padded)
+    np.cumsum(padded, axis=1, out=padded)
+    sat[1:, 1:] = padded
+    sums = (sat[win:win + h, win:win + w] - sat[:h, win:win + w]
+            - sat[win:win + h, :w] + sat[:h, :w])
+    return (sums / float(win * win)).astype(np.float32)
 
 
 def _local_luminance_sigma(luminance: np.ndarray, window_px: int) -> np.ndarray:
@@ -369,14 +383,18 @@ class FoliageMask:
                 f'(~{target_mpp:.1f} m/px) for morphology'
             )
             img = img.resize((new_w, new_h), Image.BILINEAR)
-            # Max-pool sigma by taking block-maxes. Pillow doesn't ship a
-            # MaxPool filter, so do it via a downsample-after-MaxFilter with
-            # a window matching the downsample factor (rounded up).
-            max_win = max(3, int(math.ceil(factor)) | 1)  # odd
-            sigma_img = Image.fromarray(sigma_native, mode='F').filter(
-                ImageFilter.MaxFilter(max_win)
-            ).resize((new_w, new_h), Image.NEAREST)
-            sigma = np.asarray(sigma_img, dtype=np.float32)
+            # Max-pool sigma by taking true block-maxes via np.maximum.reduceat.
+            # The previous PIL approximation (MaxFilter(~factor) + NEAREST
+            # resize) was O(pixels * factor²): ~16 s for a 2545² texture at
+            # factor 21, minutes for km-scale worlds. reduceat covers every
+            # native pixel exactly once (no window gaps/overlaps) and runs in
+            # milliseconds.
+            row_starts = np.arange(new_h) * native_h // new_h
+            col_starts = np.arange(new_w) * native_w // new_w
+            sigma = np.maximum.reduceat(
+                np.maximum.reduceat(sigma_native, row_starts, axis=0),
+                col_starts, axis=1,
+            ).astype(np.float32)
         else:
             sigma = sigma_native
             new_w, new_h = native_w, native_h
