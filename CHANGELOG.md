@@ -7,6 +7,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- Fuel-mode trees (`--foliage-style fuel`) now carry a **trunk-cylinder
+  collision** in their generated wrapper, matching the cartoon path, so a
+  rover collides with the trunk instead of driving through it (the canopy
+  stays visual-only so it can pass under the crown). Regression test
+  `test/test_tree_collision.py` pins the invariant for both styles. Existing
+  `models_fuel/` wrappers from older runs are left untouched (idempotent
+  writer), so regenerate or delete them to pick up trunk collision.
 - Roads (`--with-roads`) are now **DEM-draped mesh ribbons with collision**
   instead of flat, visual-only, per-segment polyline slabs. Each OSM way is
   chunked (for per-tile streaming), densified, offset to its per-class width,

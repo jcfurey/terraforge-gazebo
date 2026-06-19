@@ -310,7 +310,10 @@ def _fuel_wrapper_sdf(name: str, variant_idx: int) -> str:
     the URI once and GPU-instances every `<include>model://...</include>`
     that references it, which is the point of fuel mode over cartoon —
     2000 tree instances cost the renderer 5 unique meshes, not 2000
-    unique inline links. Each wrapper is static and collision-free.
+    unique inline links. Each wrapper is static with a trunk-cylinder
+    collision (matching the cartoon path) so a rover collides with the
+    trunk instead of driving through it; the canopy stays visual-only so
+    the rover can pass under the crown.
     """
     trunk_h, trunk_r, canopy_half_h, canopy_r, shape = _TREE_VARIANT_CONFIGS[variant_idx]
     # Pick a representative color per shape class. Fuel wrappers are
@@ -349,6 +352,13 @@ def _fuel_wrapper_sdf(name: str, variant_idx: int) -> str:
           <diffuse>{tr} {tg} {tb} 1</diffuse>
         </material>
       </visual>
+      <collision name='trunk'>
+        <pose>0 0 {half_trunk:.3f} 0 0 0</pose>
+        <geometry><cylinder>
+          <radius>{trunk_r:.3f}</radius>
+          <length>{trunk_h:.3f}</length>
+        </cylinder></geometry>
+      </collision>
       <visual name='canopy'>
         <pose>0 0 {canopy_z:.3f} 0 0 0</pose>
 {canopy_visual}
