@@ -6,11 +6,13 @@ import json
 import math as _math
 import os
 import random as _random
+from urllib.parse import quote
 
 import shapely.affinity
 import shapely.geometry
 import shapely.ops
 
+from terraforge.data_processing import mesh_builder
 from terraforge.utils.coordinates import CoordinateConverter
 from terraforge.utils.logging import logger
 from terraforge.utils.seeding import stable_seed
@@ -130,57 +132,72 @@ def _jitter(h: float, rng: _random.Random) -> float:
     return h * (1.0 + rng.uniform(-_HEIGHT_JITTER, _HEIGHT_JITTER))
 
 
-def _polygon_to_polyline_body_sdf(polygon, name_prefix: str, pose_xyz: tuple,
-                                  height: float, color=(0.7, 0.7, 0.7)) -> str:
-    """Return `<collision>` + `<visual>` SDF for one building.
+# OSM roof:shape values mapped to the roof primitives mesh_builder can build.
+# Anything else (skillion, gambrel, mansard, dome, round, ...) maps to flat —
+# a safe, watertight degrade rather than a wrong-looking approximation.
+_ROOF_SHAPE_MAP = {
+    'gabled': 'gabled',
+    'gable': 'gabled',
+    'hipped': 'hipped',
+    'half-hipped': 'hipped',
+    'hip': 'hipped',
+    'pyramidal': 'pyramidal',
+    'pyramid': 'pyramidal',
+    'flat': 'flat',
+}
 
-    Poses are baked into each child element and element names made unique
-    via ``name_prefix``.
+
+def _infer_roof(props: dict) -> tuple:
+    """Return ``(roof_shape, roof_height_m_or_None)`` from OSM roof tags.
+
+    ``roof_shape`` is one of mesh_builder's supported shapes (flat by
+    default). ``roof_height`` prefers an explicit ``roof:height`` tag, then
+    ``roof:levels`` * ~2 m; ``None`` lets mesh_builder pick a default pitch.
+    """
+    shape = _ROOF_SHAPE_MAP.get(
+        str(props.get('roof:shape', '')).lower().strip(), 'flat'
+    )
+    roof_height = None
+    if 'roof:height' in props:
+        try:
+            roof_height = float(str(props['roof:height']).rstrip(' m'))
+        except (TypeError, ValueError):
+            roof_height = None
+    if roof_height is None and 'roof:levels' in props:
+        try:
+            roof_height = max(float(props['roof:levels']), 0.0) * 2.0
+        except (TypeError, ValueError):
+            roof_height = None
+    return shape, roof_height
+
+
+def _mesh_file_uri(path: str) -> str:
+    """Absolute path -> percent-encoded ``file://`` URI for an SDF mesh uri."""
+    return 'file://' + quote(os.path.abspath(path), safe='/')
+
+
+def _polygon_to_mesh_body_sdf(name_prefix: str, pose_xyz: tuple,
+                              mesh_uri: str, color=(0.7, 0.7, 0.7)) -> str:
+    """Return `<collision>` + `<visual>` SDF referencing a building mesh.
+
+    Both the collision and the visual point at the same watertight OBJ
+    (walls + roof), so the robot collides with the real extruded footprint
+    instead of an axis-aligned bounding box. The mesh is in the building's
+    local frame, so a single ``<pose>`` places it on the terrain.
 
     Designed to be dropped into a shared `<link>` that holds every static
-    body in a tile — collapses hundreds of per-building links (+ fixed
-    joints) down to a single link per tile, which is the single biggest
-    world-load speedup available without mesh baking. See
-    ``sdf_builder.build_scene_tiles`` for the assembly.
+    body in a tile — see ``sdf_builder.build_scene_tiles`` for the assembly.
     """
-    if not polygon.is_valid or polygon.geom_type != 'Polygon':
-        return _polygon_to_box_body_sdf(polygon, name_prefix, pose_xyz, height, color)
-
-    if not polygon.exterior.is_ccw:
-        polygon = shapely.geometry.polygon.orient(polygon, sign=1.0)
-
-    coords = list(polygon.exterior.coords)
-    if coords[0] == coords[-1]:
-        coords = coords[:-1]
-    pts = '\n            '.join(f'<point>{x:.3f} {y:.3f}</point>' for x, y in coords)
-
-    minx, miny, maxx, maxy = polygon.bounds
-    box_x = max(maxx - minx, 0.1)
-    box_y = max(maxy - miny, 0.1)
-    box_cx = (minx + maxx) / 2.0
-    box_cy = (miny + maxy) / 2.0
-
     r, g, b = color
     px, py, pz = pose_xyz
-    # Collision: axis-aligned bbox expressed in absolute world metres,
-    # centered on the building's bbox-center + half-height. Visual:
-    # polyline coords are relative to the building's pose, so we apply
-    # the pose via <visual><pose>.
     return (
         f"      <collision name='col_{name_prefix}'>\n"
-        f'        <pose>{px + box_cx:.3f} {py + box_cy:.3f} '
-        f'{pz + height / 2.0:.3f} 0 0 0</pose>\n'
-        f'        <geometry><box><size>{box_x:.3f} {box_y:.3f} '
-        f'{height:.3f}</size></box></geometry>\n'
+        f'        <pose>{px:.3f} {py:.3f} {pz:.3f} 0 0 0</pose>\n'
+        f'        <geometry><mesh><uri>{mesh_uri}</uri></mesh></geometry>\n'
         f'      </collision>\n'
         f"      <visual name='vis_{name_prefix}'>\n"
         f'        <pose>{px:.3f} {py:.3f} {pz:.3f} 0 0 0</pose>\n'
-        f'        <geometry>\n'
-        f'          <polyline>\n'
-        f'            {pts}\n'
-        f'            <height>{height:.3f}</height>\n'
-        f'          </polyline>\n'
-        f'        </geometry>\n'
+        f'        <geometry><mesh><uri>{mesh_uri}</uri></mesh></geometry>\n'
         f'        <material>\n'
         f'          <ambient>{r} {g} {b} 1</ambient>\n'
         f'          <diffuse>{r} {g} {b} 1</diffuse>\n'
@@ -252,10 +269,13 @@ def process_osm_buildings_to_sdf(osm_filepath: str, models_dir: str, origin_wgs8
                                  elevation_sampler=None, cloud_mask=None):
     """Convert OSM building footprints into per-building Gazebo SDF models.
 
-    Reads ``osm_filepath`` (GeoJSON) and writes one model per building under
-    ``models_dir``. The footprint polygon is preserved via SDF ``<polyline>``
-    when possible; self-intersecting or multipart polygons fall back to an
-    axis-aligned bounding box.
+    Reads ``osm_filepath`` (GeoJSON) and emits one body fragment per building.
+    Each building is baked into a watertight OBJ (extruded footprint walls +
+    base + a flat or pitched roof) written under
+    ``models_dir/building_meshes/``; the body fragment references that mesh for
+    BOTH ``<visual>`` and ``<collision>`` so robots collide with the real
+    footprint, not its bounding box. Self-intersecting / degenerate polygons
+    that can't be meshed fall back to an axis-aligned bounding box body.
 
     ``elevation_sampler(gx, gy) -> z_meters`` optionally provides terrain Z at
     the building footprint so the model sits on the ground instead of floating
@@ -265,6 +285,10 @@ def process_osm_buildings_to_sdf(osm_filepath: str, models_dir: str, origin_wgs8
     """
     logger.info(f'Processing OSM buildings from {osm_filepath} to models in {models_dir}')
     os.makedirs(models_dir, exist_ok=True)
+    # Per-building meshes live in their own subdir so the world's models/ tree
+    # stays tidy and a regen overwrites cleanly by deterministic model name.
+    meshes_dir = os.path.join(models_dir, 'building_meshes')
+    os.makedirs(meshes_dir, exist_ok=True)
 
     converter = CoordinateConverter(origin_wgs84)
     # Deterministic RNG seeded by origin coords, so two runs over the same
@@ -290,7 +314,7 @@ def process_osm_buildings_to_sdf(osm_filepath: str, models_dir: str, origin_wgs8
     try:
         with open(osm_filepath, 'r', encoding='utf-8') as f:
             osm_data = json.load(f)
-        polyline_count = 0
+        mesh_count = 0
         bbox_fallback = 0
         tiny_skipped = 0
 
@@ -404,15 +428,29 @@ def process_osm_buildings_to_sdf(osm_filepath: str, models_dir: str, origin_wgs8
                     # area — lets the area-based extrapolation kick in when
                     # OSM gave no type.
                     height = _infer_height(props, area_m2=footprint_area, rng=rng)
+                    roof_shape, roof_height = _infer_roof(props)
 
-                    body_sdf = _polygon_to_polyline_body_sdf(
-                        polygon_centered, name_prefix=model_name,
-                        pose_xyz=(pose_xy[0], pose_xy[1], pose_z),
-                        height=height, color=color,
+                    # Bake a watertight mesh (walls + roof) and reference it
+                    # for both visual and collision. Fall back to a bbox body
+                    # only when the footprint can't be meshed.
+                    mesh_path = os.path.join(meshes_dir, f'{model_name}.obj')
+                    meshed = mesh_builder.generate_building_obj(
+                        mesh_path, polygon_centered, height,
+                        roof_shape=roof_shape, roof_height=roof_height,
                     )
-                    if '<polyline>' in body_sdf:
-                        polyline_count += 1
+                    if meshed:
+                        body_sdf = _polygon_to_mesh_body_sdf(
+                            name_prefix=model_name,
+                            pose_xyz=(pose_xy[0], pose_xy[1], pose_z),
+                            mesh_uri=_mesh_file_uri(mesh_path), color=color,
+                        )
+                        mesh_count += 1
                     else:
+                        body_sdf = _polygon_to_box_body_sdf(
+                            polygon_centered, name_prefix=model_name,
+                            pose_xyz=(pose_xy[0], pose_xy[1], pose_z),
+                            height=height, color=color,
+                        )
                         bbox_fallback += 1
 
                     buildings.append({
@@ -435,7 +473,7 @@ def process_osm_buildings_to_sdf(osm_filepath: str, models_dir: str, origin_wgs8
 
         logger.info(
             f'OSM buildings processed: {len(buildings)} models '
-            f'({polyline_count} polyline, {bbox_fallback} bbox-fallback, '
+            f'({mesh_count} mesh, {bbox_fallback} bbox-fallback, '
             f'{cloud_skipped} cloud-masked, '
             f'{tiny_skipped} below {MIN_BUILDING_AREA_M2:.0f} m², '
             f'{invalid_geom_skipped} invalid geometry, '

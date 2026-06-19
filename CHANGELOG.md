@@ -7,6 +7,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- Buildings are now real **extruded-footprint meshes** instead of a
+  `<polyline>` visual + axis-aligned-bbox collision. Each building bakes to a
+  watertight OBJ (walls + base + roof) under `models/building_meshes/`, used
+  for both `<visual>` and `<collision>`, so robots collide with the true
+  footprint. Roofs are flat by default or **pitched** (gabled / hipped /
+  pyramidal) when OSM tags `roof:shape` on a rectangular-ish footprint
+  (`roof:height` / `roof:levels` honoured). New dependency-free module
+  `terraforge/data_processing/mesh_builder.py` (ear-clipping triangulator +
+  OBJ writer) and `test/test_mesh_builder.py`. Degenerate footprints still
+  fall back to a bbox body.
 - `--foliage-mask worldcover`: a third foliage-mask mode driven by the ESA
   WorldCover 10 m land-cover raster (keyless AWS Open Data, CC BY 4.0) instead
   of the RGB EXG heuristic. Authoritative *tree-cover* is the positive;
