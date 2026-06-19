@@ -51,6 +51,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `test/test_cli_helpers.py` covering the extracted `cli` helpers.
 
 ### Changed
+- **Physics engine is now dartsim** (was plain bullet). dartsim is the
+  gz-physics 7 backend that supports both collision shapes this generator
+  emits, which unlocks two behavioural changes:
+    - **Terrain heightmap now has collision** — the rover drives on the real
+      DEM relief instead of a flat stand-in plane, and buildings/trees sit on
+      the surface they collide with. The flat `<ground_plane>` is kept only
+      for worlds generated without a DEM.
+    - Buildings collide as meshes (see Added) rather than bounding boxes.
+  Skid-steer/diff-drive bases still yaw in place correctly (dartsim honours
+  `<fdir1>`, unlike the bullet-featherstone path of gz-physics#697). The
+  physics-system `<engine>` selects `gz-physics-dartsim-plugin`; the `<physics
+  type>` declaration matches.
 - Foliage-mask sigma max-pool now uses a true numpy block max-pool
   (`np.maximum.reduceat`) instead of `MaxFilter(~factor)` + NEAREST resize —
   ~16 s → milliseconds on a 2545² texture; end-to-end generation ~22 s → ~4 s

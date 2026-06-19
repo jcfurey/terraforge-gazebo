@@ -30,7 +30,7 @@ Beta. Packaged as an **ament_python** ROS 2 package called `terraforge_gazebo`, 
 - **Seven satellite tile providers** with a registry (`esri`, `sentinel2`, `usgs_naip`, `gibs_bluemarble`, `mapbox`, `maptiler`, `bing`). Esri is the recommended keyless default. Mosaics are precision-cropped to the exact user bbox before saving.
 - **Strict UTM coordinate handling** — bbox math and asset placement use the local UTM zone (EPSG:326XX / 327XX), not Web Mercator, so feature positions match the textured terrain to within pyproj precision at any latitude.
 - **Portable output**: each generated world ships with its own `models/` + `media_<world-name>/` subdirectories, loaded via `GZ_SIM_RESOURCE_PATH` + baked-in `file://` paths.
-- **Physics-ready SDF template**: loads plain `bullet`, the IMU + Contact systems, and a flat collision ground plane (the bullet engines don't support SDF heightmap collision; dartsim does in gz-physics 7, but is not used here). Plain bullet — not bullet-featherstone — because featherstone cannot yaw a skid-steer base in place (its contact path ignores `fdir1`, so wheel-frame friction anisotropy is inexpressible; upstream gz-physics issue #697). Workspace rovers drive on flat ground while the heightmap renders visually.
+- **Physics-ready SDF template**: loads **dartsim** (mandatory), the IMU + Contact systems. dartsim is the gz-physics 7 backend that supports both collision shapes this generator emits — `<heightmap>` collision *and* `<mesh>` collision — and still skid-steers correctly (it honours `<fdir1>`, unlike bullet-featherstone; upstream gz-physics issue #697). So rovers **drive on the real DEM terrain** (the heightmap is the collision surface, not just a visual) and collide with the **per-building extruded-footprint meshes**. Worlds generated without a DEM fall back to a flat collision ground plane.
 - **ROS 2 integration**: a `spawn_world.launch.py` that wraps `ros_gz_sim`'s `gz_sim.launch.py`.
 
 ## Use inside a ROS 2 Jazzy workspace
@@ -178,7 +178,7 @@ Attribution is emitted as a log line per generation run; include it when publish
   - `cloud_mask.py` — HLS-based cloud detection with morphological opening + per-(lat, lon) lookup.
   - `texture_processor.py` — copies the cropped mosaic into `media_<world-name>/materials/textures/`.
   - `sdf_builder.py` — Jinja SDF world template renderer.
-  - `templates/world_template.sdf.j2` — the SDF skeleton (physics engine, lighting, terrain, buildings, trees, roads, collision ground-plane).
+  - `templates/world_template.sdf.j2` — the SDF skeleton (dartsim physics engine, lighting, terrain with heightmap collision, buildings, trees, roads; flat collision ground-plane only when there's no DEM).
 - `terraforge.utils.coordinates` — WGS84 ↔ UTM ↔ local-Gazebo converter (local UTM zone derived from origin longitude, not Web Mercator).
 - `terraforge.ui.main_window` — PyQt6 GUI.
 - `experimental/ui/` — Custom PyQt map/GL widgets. Not wired into the main GUI; kept for future map-preview work.

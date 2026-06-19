@@ -4,15 +4,15 @@
 
     <!-- 4 ms step (250 Hz physics). 1 ms put gzserver at ~20% RTF on the
          Vicksburg-scale world (370 static collisions + heightmap). 4 ms is
-         comfortable for plain Bullet on a ground vehicle and restores RTF
+         comfortable for dartsim on a ground vehicle and restores RTF
          close to 1.0 without noticeably degrading wheel/contact fidelity.
          The `type` attribute is REQUIRED by the SDF spec — omitting it makes
          libsdformat reject the whole world ("Required attribute[type] in
          element[physics] is not specified"). gz-sim itself ignores the value
          (the engine is selected via the <engine> child of the physics-system
-         <plugin> below); 'bullet' is used so the declaration matches the
+         <plugin> below); 'dartsim' is used so the declaration matches the
          engine actually loaded. -->
-    <physics name='4ms' type='bullet'>
+    <physics name='4ms' type='dartsim'>
       <max_step_size>0.004</max_step_size>
       <real_time_factor>1.0</real_time_factor>
     </physics>
@@ -32,31 +32,27 @@
     </spherical_coordinates>
     {% endif %}
 
-    <!-- Physics engine: plain `bullet` (NOT bullet-featherstone, NOT
-         gazebo's default dartsim). The two engines we ruled out:
-           - bullet-featherstone cannot rotate a skid-steer / diff-drive
-             base in place: forward/back tracks fine but commanded yaw
-             only produces wheel slip (upstream gz-physics issue #697,
-             reproducible on ROS 2 Jazzy with the stock diff_drive.sdf,
-             still open as of gz-physics 7). Mechanically its btMultiBody
-             contact path ignores <fdir1>, so the wheel-frame friction
-             anisotropy that skid-steering depends on cannot be expressed.
-           - dartsim DOES support heightmap collision in gz-physics 7
-             (see ground_plane comment) but does not implement
-             <polyline> collision, which originally forced the
-             flat-ground-plane hack on Vicksburg.
-         Plain bullet (Bullet's discrete rigid-body solver) honours
-         <mu1>/<mu2> + <kp>/<kd> the way ODE used to, so the rover
-         actually skid-steers; it doesn't support heightmap collision,
-         which is worked around with the flat <ground_plane> below.
+    <!-- Physics engine: dartsim (gz-sim's default, and mandatory for this
+         project). dartsim is the only gz-physics 7 backend that supports
+         BOTH of the collision shapes this generator emits:
+           - <heightmap> collision (heightmap::AttachHeightmapShapeFeature),
+             so the rover drives on the real DEM terrain instead of a flat
+             stand-in plane (see the <terrain> collision block below); and
+           - <mesh> collision, used by the per-building extruded-footprint
+             meshes (building_processor / mesh_builder) so robots collide
+             with the true footprint, not its bounding box.
+         dartsim also honours <mu>/<mu2> + <fdir1> friction, so a skid-steer
+         / diff-drive base yaws in place correctly — the failure that ruled
+         out bullet-featherstone (its btMultiBody contact path ignores
+         <fdir1>, upstream gz-physics issue #697) does not apply here.
          Ships with gz-physics-7 on ROS 2 Jazzy
-         (`libgz-physics-bullet-plugin.so` in `ros-jazzy-gz-physics-vendor`).
+         (`libgz-physics-dartsim-plugin.so` in `ros-jazzy-gz-physics-vendor`).
          The <filename> value must be the library basename without `lib`
          prefix or `.so` suffix. -->
     <plugin filename='gz-sim-physics-system'
             name='gz::sim::systems::Physics'>
       <engine>
-        <filename>gz-physics-bullet-plugin</filename>
+        <filename>gz-physics-dartsim-plugin</filename>
       </engine>
     </plugin>
     <plugin filename='gz-sim-user-commands-system'
@@ -120,25 +116,12 @@
       </fog>
     </scene>
 
-    <!-- Flat collision plane — the ONLY collision surface in this world.
-         The bullet engine selected by this template does not implement
-         AttachHeightmapShapeFeature (nor does bullet-featherstone), so
-         any <heightmap> under <collision> is dropped at world load with:
-           [Err] Unsupported collision geometry type [6] for Link [link]
-           [Dbg] Heightmaps will be ignored.
-         NOTE: dartsim (the gz-sim default engine) DOES support heightmap
-         collision in gz-physics 7 / Harmonic — see the plugin feature
-         table (heightmap::AttachHeightmapShapeFeature). Bullet is chosen
-         here for skid-steer fidelity (see the physics-system comment), so
-         the heightmap stays a VISUAL-only surface: the rover drives on
-         this flat plane at z=0 while seeing the elevated terrain around
-         it. Buildings / trees float or sink relative to this plane based
-         on their DEM elevation; that's cosmetic and doesn't affect
-         physics.
-         Upgrade paths: switch <engine> to dartsim and add a heightmap
-         <collision> (works upstream, costs skid-steer correctness), or
-         pre-triangulate the heightmap to an STL and use <mesh> collision
-         (all three engines support that). -->
+    {% if not heightmap_uri %}
+    <!-- Flat ground plane: the collision + visual floor for worlds generated
+         WITHOUT a DEM/heightmap. When a heightmap is present, the <terrain>
+         model below carries a real <heightmap> collision (dartsim implements
+         heightmap::AttachHeightmapShapeFeature), so this flat plane is omitted
+         to avoid a second, conflicting floor. -->
     <model name='ground_plane'>
       <static>true</static>
       <pose>0 0 0 0 0 0</pose>
@@ -159,7 +142,6 @@
             </friction>
           </surface>
         </collision>
-        {% if not heightmap_uri %}
         <visual name='visual'>
           <cast_shadows>false</cast_shadows>
           <geometry>
@@ -174,17 +156,18 @@
             <specular>0.8 0.8 0.8 1</specular>
           </material>
         </visual>
-        {% endif %}
       </link>
     </model>
+    {% endif %}
 
     {% if heightmap_uri %}
-    <!-- Terrain is VISUAL ONLY. No <collision> block: every gz-sim
-         physics backend (dartsim, bullet, bullet-featherstone) rejects
-         <heightmap> collision ("Unsupported collision geometry type [6]"
-         / "Heightmaps will be ignored"). The rover drives on the flat
-         <ground_plane> above instead; this model just renders the DEM
-         so the scene looks like real terrain.
+    <!-- Terrain: both COLLISION and VISUAL. dartsim implements
+         heightmap::AttachHeightmapShapeFeature, so the DEM heightmap is the
+         rover's actual driving surface — it climbs the real relief instead of
+         a flat stand-in plane, and buildings / trees (placed at their DEM
+         elevation) sit on the same surface they collide with. The collision
+         and visual <heightmap> share identical uri / size / pos so the
+         physical surface matches what's rendered.
 
          <pos> is shifted by terrain_z_offset so the DEM elevation at
          the origin (lat/lon center) corresponds to sim z=0; without it
@@ -193,6 +176,23 @@
     <model name='terrain'>
       <static>true</static>
       <link name='link'>
+        <collision name='collision'>
+          <geometry>
+            <heightmap>
+              <uri>{{ heightmap_uri }}</uri>
+              <size>{{ extent_meters }} {{ extent_meters }} {{ height_amplitude }}</size>
+              <pos>0 0 {{ terrain_z_offset }}</pos>
+            </heightmap>
+          </geometry>
+          <surface>
+            <friction>
+              <ode>
+                <mu>100</mu>
+                <mu2>50</mu2>
+              </ode>
+            </friction>
+          </surface>
+        </collision>
         <visual name='visual'>
           <geometry>
             <heightmap>
