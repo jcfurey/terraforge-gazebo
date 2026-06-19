@@ -490,10 +490,10 @@ def run_generate_world(
             elevation_sampler=sample_terrain_z,
         )
     else:
-        # Roads are opt-in because flat-per-segment extrusions float above
-        # undulating terrain (the heightmap has no collision in dartsim, so
-        # "follow the ground" requires per-polyline elevation interpolation
-        # that isn't implemented yet). Re-enable via --with-roads.
+        # Roads stay opt-in to keep default worlds lean and because OSM
+        # highway coverage/quality varies. When enabled they're draped mesh
+        # ribbons with collision (road_processor) that follow the DEM, not
+        # the old floating flat slabs. Enable via --with-roads.
         roads = []
     # Historical name — file now carries the heightmap-derived normal
     # map, not a flat 4x4 stand-in. Keeping the filename stable so
@@ -635,9 +635,9 @@ def cli(ctx, debug):
                    'lossless (relevant only for sharp-edged orthophotos supplied '
                    'via --texture-file).')
 @click.option('--with-roads/--no-roads', default=False,
-              help='Emit OSM highway ways as flat road strips. Off by default — '
-                   'current implementation is flat-per-segment and floats '
-                   'over undulating terrain.')
+              help='Emit OSM highway ways as draped mesh road ribbons with '
+                   'collision (asphalt friction), following the DEM. Off by '
+                   'default to keep worlds lean; OSM road coverage varies.')
 @click.option('--cloud-filter/--no-cloud-filter', default=True,
               help='Drop buildings/trees whose satellite pixel looks like cloud '
                    '(high luminance + low saturation). On by default.')

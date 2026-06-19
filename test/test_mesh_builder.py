@@ -132,6 +132,33 @@ def test_degenerate_polygon_returns_false(tmp_path):
     ) is False
 
 
+def test_ribbon_slab_thickness_and_top_faces_up(tmp_path):
+    # Straight ribbon along +x, 4 m wide, draped flat at z=2.
+    n = 5
+    top_left = [(float(i * 5), 2.0, 2.0) for i in range(n)]
+    top_right = [(float(i * 5), -2.0, 2.0) for i in range(n)]
+    path = str(tmp_path / 'r.obj')
+    assert mesh_builder.generate_ribbon_obj(path, top_left, top_right, 0.08)
+    verts, faces = _read_obj(path)
+    assert sorted({round(z, 3) for _, _, z in verts}) == [1.92, 2.0]
+    # The top surface (all three verts at z=2) must face up after orienting.
+    top_faces = 0
+    for i, j, k in faces:
+        a, b, c = verts[i], verts[j], verts[k]
+        if all(abs(p[2] - 2.0) < 1e-6 for p in (a, b, c)):
+            assert _normal(a, b, c)[2] > 0.5
+            top_faces += 1
+    assert top_faces >= 4
+
+
+def test_ribbon_mismatched_or_short_input_returns_false(tmp_path):
+    path = str(tmp_path / 'bad.obj')
+    assert mesh_builder.generate_ribbon_obj(path, [(0, 0, 0)], [(0, 1, 0)]) is False
+    assert mesh_builder.generate_ribbon_obj(
+        path, [(0, 0, 0), (1, 0, 0)], [(0, 1, 0)]
+    ) is False
+
+
 def test_ear_clip_square_is_two_triangles():
     tris = mesh_builder._ear_clip([(0, 0), (1, 0), (1, 1), (0, 1)])
     assert len(tris) == 2

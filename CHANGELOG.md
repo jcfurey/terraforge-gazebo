@@ -7,6 +7,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- Roads (`--with-roads`) are now **DEM-draped mesh ribbons with collision**
+  instead of flat, visual-only, per-segment polyline slabs. Each OSM way is
+  chunked (for per-tile streaming), densified, offset to its per-class width,
+  and every left/right cross-section vertex samples the terrain so the ribbon
+  follows the relief smoothly. The baked OBJ backs both `<visual>` and a
+  `<collision>` with asphalt friction, so the rover drives on the road over
+  the (now collidable) terrain. New `mesh_builder.generate_ribbon_obj` and
+  `test/test_road_mesh.py`.
 - Buildings are now real **extruded-footprint meshes** instead of a
   `<polyline>` visual + axis-aligned-bbox collision. Each building bakes to a
   watertight OBJ (walls + base + roof) under `models/building_meshes/`, used
