@@ -7,6 +7,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- `--foliage-mask worldcover`: a third foliage-mask mode driven by the ESA
+  WorldCover 10 m land-cover raster (keyless AWS Open Data, CC BY 4.0) instead
+  of the RGB EXG heuristic. Authoritative *tree-cover* is the positive;
+  *built-up* + *water* and the same OSM building/road/parking buffers are the
+  negative. Tiles are read straight from the Cloud-Optimized GeoTIFFs over
+  GDAL `/vsicurl/` (no whole-tile download) and warped nearest-neighbour onto
+  the world's UTM grid. Works without any satellite imagery, so it's robust
+  where OSM foliage tagging is sparse or the texture is cloudy/seasonal. New
+  module `terraforge/data_acquisition/worldcover.py`, `WORLDCOVER_CACHE_DIR`
+  (`TERRAFORGE_WORLDCOVER_DIR`) cache, and `test/test_worldcover*.py`. The mode
+  was previously reserved and raised `NotImplementedError`.
 - `terraforge/__main__.py` module entry point: `python3 -m terraforge` is now
   the documented standalone invocation. setup.cfg routes the console scripts
   into `lib/terraforge_gazebo/` (so `ros2 run` works in a colcon workspace),

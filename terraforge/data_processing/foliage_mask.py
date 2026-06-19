@@ -115,6 +115,19 @@ _OSM_POSITIVE_TAGS = {
     ('leisure', 'garden'),
 }
 
+# ESA WorldCover 10 m class codes consumed by the `worldcover` mask mode.
+# Mirrored locally (rather than imported from data_acquisition.worldcover) to
+# keep this processing module independent of the acquisition layer — the same
+# house pattern as the road half-width table mirrored from road_processor.
+_WORLDCOVER_TREE = 10
+_WORLDCOVER_BUILTUP = 50
+_WORLDCOVER_WATER = 80
+# Tree cover is the authoritative canopy signal; built-up and open water are
+# carved out so an OSM "park"/"forest" polygon overlapping a rooftop or a lake
+# (untagged in OSM) doesn't scatter trees onto it.
+DEFAULT_WORLDCOVER_POSITIVE = (_WORLDCOVER_TREE,)
+DEFAULT_WORLDCOVER_NEGATIVE = (_WORLDCOVER_BUILTUP, _WORLDCOVER_WATER)
+
 
 def _box_mean(arr_f32: np.ndarray, window_px: int) -> np.ndarray:
     """Mean of a WxW window around each pixel, replicate edges.
@@ -517,6 +530,115 @@ class FoliageMask:
         )
         return instance
 
+    @classmethod
+    def from_worldcover_and_vectors(
+        cls,
+        worldcover_tif: str,
+        bbox_wgs84: tuple,
+        *,
+        world_half_extent_m: float,
+        converter,
+        roads_geojson: Optional[str] = None,
+        parking_geojson: Optional[str] = None,
+        positive_osm_geojson: Optional[str] = None,
+        buildings_geojson: Optional[str] = None,
+        road_margin_m: float = DEFAULT_ROAD_MARGIN_M,
+        track_margin_m: float = DEFAULT_TRACK_MARGIN_M,
+        parking_margin_m: float = DEFAULT_PARKING_MARGIN_M,
+        building_margin_m: float = DEFAULT_BUILDING_MARGIN_M,
+        positive_classes=DEFAULT_WORLDCOVER_POSITIVE,
+        negative_classes=DEFAULT_WORLDCOVER_NEGATIVE,
+    ):
+        """Build a FoliageMask from an ESA WorldCover class raster + OSM vectors.
+
+        ``worldcover_tif`` is a single-band raster of WorldCover class codes,
+        already reprojected onto the same square UTM grid as the texture /
+        heightmap (north-up: row 0 = north, col 0 = west — what
+        worldcover.download_worldcover_utm emits). Tree-cover pixels are the
+        authoritative canopy signal — there is no EXG / texture heuristic, so
+        unlike the rgb-osm mode this path needs no satellite imagery. The
+        result is ``(worldcover-positive OR OSM-positive) AND NOT (buildings OR
+        roads OR parking OR worldcover-negative)`` so it stays drop-in
+        compatible with the rgb-osm mask the tree scatter already consumes.
+        """
+        # Lazy import: only the worldcover path needs GDAL, so the common
+        # rgb-osm / off paths (and their tests) don't depend on it at import.
+        from osgeo import gdal
+        gdal.UseExceptions()
+
+        ds = gdal.Open(worldcover_tif)
+        if ds is None:
+            raise RuntimeError(
+                f'Could not open WorldCover raster: {worldcover_tif}'
+            )
+        try:
+            classes = ds.GetRasterBand(1).ReadAsArray()
+        finally:
+            ds = None
+        if classes is None:
+            raise RuntimeError(
+                f'WorldCover raster has no readable band: {worldcover_tif}'
+            )
+        classes = np.asarray(classes)
+        h, w = classes.shape
+        image_size_px = (w, h)
+
+        positive_wc = np.isin(classes, positive_classes)
+        negative_wc = np.isin(classes, negative_classes)
+
+        world_box = shapely.geometry.box(
+            -world_half_extent_m, -world_half_extent_m,
+            world_half_extent_m, world_half_extent_m,
+        )
+
+        # Positive OSM union: tagged foliage polygons stay scatter-authoritative
+        # so tagged parks/woods still fire even where WorldCover misclassifies.
+        positive_osm_polys = _load_polygons_gazebo(
+            positive_osm_geojson, converter, world_box,
+            tag_filter=_OSM_POSITIVE_TAGS,
+        )
+        positive_osm_mask = _rasterize_polygons(
+            positive_osm_polys, image_size_px, world_half_extent_m,
+        )
+
+        # Negative mask: OSM buildings + parking + buffered roads, plus the
+        # WorldCover built-up / water classes.
+        building_polys = _load_polygons_gazebo(
+            buildings_geojson, converter, world_box,
+        )
+        building_mask = _rasterize_polygons(
+            building_polys, image_size_px, world_half_extent_m,
+            dilate_m=building_margin_m,
+        )
+        parking_polys = _load_polygons_gazebo(
+            parking_geojson, converter, world_box,
+        )
+        parking_mask = _rasterize_polygons(
+            parking_polys, image_size_px, world_half_extent_m,
+            dilate_m=parking_margin_m,
+        )
+        road_mask = _rasterize_road_buffers(
+            roads_geojson, converter, world_box,
+            image_size_px, world_half_extent_m,
+            road_margin_m=road_margin_m,
+            track_margin_m=track_margin_m,
+        )
+        negative_mask = building_mask | parking_mask | road_mask | negative_wc
+
+        # Fuse: (WorldCover tree OR positive OSM) AND NOT negative.
+        combined = (positive_wc | positive_osm_mask) & (~negative_mask)
+
+        instance = cls(combined, bbox_wgs84, world_half_extent_m)
+        logger.info(
+            f'WorldCover foliage mask built from {worldcover_tif} ({w}x{h}): '
+            f'positive WorldCover={float(positive_wc.mean()):.1%} + '
+            f'{float(positive_osm_mask.mean()):.1%} OSM positive - '
+            f'{float(negative_mask.mean()):.1%} negative '
+            f'(roads/parking/buildings + WorldCover built-up/water) -> '
+            f'{instance.foliage_fraction:.1%} placeable.'
+        )
+        return instance
+
     def is_foliage(self, lat: float, lon: float) -> bool:
         """Lookup by WGS84 — returns True iff the cell at (lat, lon) is placeable."""
         west, south, east, north = self._bbox
@@ -568,4 +690,24 @@ def build_foliage_mask(
         return FoliageMask.from_image_and_vectors(image_path, bbox_wgs84, **kwargs)
     except Exception as e:
         logger.warning(f'Foliage mask unavailable ({e}); continuing without filtering')
+        return None
+
+
+def build_worldcover_mask(
+    worldcover_tif: str, bbox_wgs84: tuple, **kwargs
+) -> Optional[FoliageMask]:
+    """Build a WorldCover FoliageMask, returning None if it can't be built.
+
+    Lets callers gracefully fall back to the legacy tree scatter when the
+    WorldCover raster is missing or unreadable.
+    """
+    try:
+        return FoliageMask.from_worldcover_and_vectors(
+            worldcover_tif, bbox_wgs84, **kwargs
+        )
+    except Exception as e:
+        logger.warning(
+            f'WorldCover foliage mask unavailable ({e}); '
+            f'continuing without filtering'
+        )
         return None

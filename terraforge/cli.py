@@ -9,7 +9,7 @@ import click
 from osgeo import gdal
 from PIL import Image
 
-from terraforge.data_acquisition import elevation, osm, textures
+from terraforge.data_acquisition import elevation, osm, textures, worldcover
 from terraforge.data_acquisition.elevation import _calculate_bounds_wgs84
 from terraforge.data_processing import (
     building_processor,
@@ -199,12 +199,6 @@ def run_generate_world(
     # early check the first DEM download fires before the pipeline ever polls
     # cancel_flag, so a "cancel before anything runs" request is ignored.
     _check_cancel()
-
-    if foliage_mask_mode == 'worldcover':
-        raise NotImplementedError(
-            "foliage_mask_mode='worldcover' is reserved for a future ESA "
-            "WorldCover integration; use 'rgb-osm' or 'off'."
-        )
 
     # Fuel mode needs self-contained model://tree_fuel_<i> wrappers written
     # into <output>/models_fuel/ before any trees are emitted. See
@@ -404,10 +398,13 @@ def run_generate_world(
             meters_per_pixel=texture_meters_per_px,
         )
 
-    # Build the foliage mask (image canopy + OSM positives - roads/parking/
-    # buildings) BEFORE the tree processor so its image-based scatter path
-    # can consult the precomputed mask instead of the legacy bare-EXG
-    # heuristic. Mode "off" keeps the old code path in tree_processor.
+    # Build the foliage mask BEFORE the tree processor so its image-based
+    # scatter path can consult the precomputed mask instead of the legacy
+    # bare-EXG heuristic. "rgb-osm" reads the satellite texture (image canopy
+    # + OSM positives - roads/parking/buildings); "worldcover" instead reads
+    # an ESA WorldCover 10 m class raster (authoritative tree cover - built-up/
+    # water - the same OSM negatives), so it needs no imagery. Mode "off"
+    # keeps the old code path in tree_processor.
     if foliage_mask_mode == 'rgb-osm' and texture_available:
         foliage_mask = foliage_mask_mod.build_foliage_mask(
             texture_source_path, texture_bbox,
@@ -419,6 +416,42 @@ def run_generate_world(
             buildings_geojson=buildings_cache_path,
             meters_per_pixel=texture_meters_per_px,
         )
+    elif foliage_mask_mode == 'worldcover':
+        # WorldCover is 10 m native; build the mask grid at the same target
+        # m/px as rgb-osm so the OSM road/building buffers carve at matching
+        # precision, capped so an oversized radius can't allocate a giant
+        # raster. Download failures degrade to legacy scatter rather than
+        # aborting the whole world.
+        wc_cache_path = os.path.join(
+            config.WORLDCOVER_CACHE_DIR, f'{location_name}_worldcover_utm.tif'
+        )
+        wc_grid_px = max(2, int(round(
+            (2.0 * radius) / foliage_mask_mod.DEFAULT_TARGET_MPP)))
+        wc_grid_px = min(wc_grid_px, 8192)
+        try:
+            worldcover.download_worldcover_utm(
+                origin_location, radius,
+                utm_crs=converter.utm_crs_string,
+                width=wc_grid_px, height=wc_grid_px,
+                output_path=wc_cache_path,
+                bbox_wgs84=texture_bbox,
+            )
+            foliage_mask = foliage_mask_mod.build_worldcover_mask(
+                wc_cache_path, texture_bbox,
+                world_half_extent_m=radius,
+                converter=converter,
+                roads_geojson=roads_cache_path,
+                parking_geojson=parking_cache_path,
+                positive_osm_geojson=trees_cache_path,
+                buildings_geojson=buildings_cache_path,
+            )
+        except Exception as e:
+            logger.warning(
+                f'WorldCover foliage mask unavailable '
+                f'({type(e).__name__}: {e}); continuing with legacy '
+                f'bare-EXG tree scatter.'
+            )
+            foliage_mask = None
 
     _check_cancel()
     _log('Building Gazebo models from OSM footprints...')
@@ -655,10 +688,13 @@ def cli(ctx, debug):
                    'union (forest/park/scrub/orchard/vineyard/heath/garden) and '
                    'negative subtraction of buildings, road buffers, and parking '
                    'lots. Rejects smooth grass, asphalt, and green rooftops. '
+                   '"worldcover": use the ESA WorldCover 10 m land-cover raster '
+                   '(keyless AWS Open Data) — authoritative tree cover as the '
+                   'positive, built-up/water plus the same OSM building/road/'
+                   'parking buffers as the negative. Needs no satellite imagery '
+                   'and is robust where OSM foliage tagging is sparse. '
                    '"off": fall back to the legacy bare-EXG heuristic (scatter on '
-                   'any green pixel; only buildings excluded). "worldcover" is '
-                   'reserved for an ESA WorldCover 10 m tree-cover raster '
-                   'integration and currently raises NotImplementedError.')
+                   'any green pixel; only buildings excluded).')
 @click.pass_context
 def generate_world(ctx, latitude, longitude, side_length, radius, output_dir,
                    world_name, height_amplitude, tile_provider, tile_api_key,
@@ -712,16 +748,6 @@ def generate_world(ctx, latitude, longitude, side_length, radius, output_dir,
                 f'--texture-file is not a readable image ({type(e).__name__}: {e}): '
                 f'{texture_file}'
             )
-
-    # --foliage-mask worldcover is reserved but not yet implemented. Fail
-    # fast at argument parsing so we don't run the whole DEM+OSM+tile
-    # pipeline only to raise from inside run_generate_world.
-    if foliage_mask_mode.lower() == 'worldcover':
-        raise click.UsageError(
-            '--foliage-mask worldcover is reserved for a future ESA WorldCover '
-            '10 m tree-cover integration and is not yet implemented. Use '
-            "'rgb-osm' (default) or 'off'."
-        )
 
     try:
         run_generate_world(

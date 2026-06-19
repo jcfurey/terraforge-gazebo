@@ -23,6 +23,7 @@ Beta. Packaged as an **ament_python** ROS 2 package called `terraforge_gazebo`, 
   - OSM **buildings** via `osmnx` → per-building Gazebo models with SDF `<polyline>` footprint visuals + bbox collisions, height inferred from OSM tags, color by `building=*` category, base Z sampled from the DEM so buildings sit on slopes.
   - OSM **foliage** (`natural=tree|tree_row|wood|scrub|heath`, `landuse=forest|orchard|vineyard`, `leisure=park|garden`) → trunk-cylinder + sphere-canopy tree instances, scattered inside forest polygons at a reproducible seeded density (clipped to the world bbox).
   - **RGB + OSM foliage mask** *(default `--foliage-mask rgb-osm`)* — combines an ExcessGreen (EXG) canopy detector on the satellite texture with the OSM vegetation polygons above (additive), minus buildings, buffered roads, and parking lots, so trees scatter on genuine canopy without landing on asphalt, rooftops, or lawns. `--foliage-mask off` falls back to the legacy bare-EXG heuristic.
+  - **ESA WorldCover foliage mask** *(`--foliage-mask worldcover`)* — instead of the RGB heuristic, drives tree placement from the ESA WorldCover 10 m land-cover raster (keyless AWS Open Data, CC BY 4.0): the authoritative *tree-cover* class is the positive, *built-up* + *water* and the same OSM building/road/parking buffers are the negative. Read straight from the Cloud-Optimized GeoTIFFs over `/vsicurl/` (no whole-tile download) and warped to the world's UTM grid. Needs no satellite imagery, so it's robust where OSM foliage tagging is sparse or the texture is cloudy/seasonal.
   - **Two foliage rendering styles** *(`--foliage-style`)* — `cartoon` *(default)*: inline trunk+canopy primitives baked into each tile compound, no external deps. `fuel`: emit each tree as a top-level `<include>` of `model://tree_fuel_<variant>` backed by Gazebo Fuel meshes (Oak / Pine Tree); wrappers must be reachable via `GZ_SIM_RESOURCE_PATH` or a `models_fuel/` subdir of the output world, and the CLI warns up front if any are missing.
   - OSM **roads** *(opt-in, `--with-roads`)* → `highway=*` LineStrings buffered by per-class width into flat asphalt polyline ribbons.
   - **Cloud masking** on the satellite imagery — drops asset placements whose pixel looks cloud-like (high luminance + low saturation + morphological opening to dismiss small false-positive blobs like bright rooftops).
@@ -139,10 +140,11 @@ Environment variables:
 | `MAPBOX_API_KEY` | "" | Access token for `mapbox` provider |
 | `MAPTILER_API_KEY` | "" | Access token for `maptiler` provider |
 | `BING_MAPS_API_KEY` | "" | Access token for `bing` provider |
-| `TERRAFORGE_CACHE_DIR` | `$XDG_CACHE_HOME/terraforge` or `~/.cache/terraforge` | Cache root for DEM/OSM/texture downloads |
+| `TERRAFORGE_CACHE_DIR` | `$XDG_CACHE_HOME/terraforge` or `~/.cache/terraforge` | Cache root for DEM/OSM/texture/WorldCover downloads |
 | `TERRAFORGE_DEM_DIR` | `<cache-root>/dem` | Override DEM cache location |
 | `TERRAFORGE_OSM_DIR` | `<cache-root>/osm` | Override OSM cache location |
 | `TERRAFORGE_TEXTURE_DIR` | `<cache-root>/textures` | Override texture cache location |
+| `TERRAFORGE_WORLDCOVER_DIR` | `<cache-root>/worldcover` | Override ESA WorldCover cache location (used by `--foliage-mask worldcover`) |
 
 ### Tile providers
 
@@ -165,11 +167,13 @@ Attribution is emitted as a log line per generation run; include it when publish
   - `elevation.py` — SRTM DEM download, **UTM-correct** WGS84 bbox, and WGS84→UTM reprojection (`reproject_dem_to_utm`) onto a true meter-square Ogre2-valid grid.
   - `osm.py` — buildings / foliage / roads downloaders (all `osmnx.features_from_bbox`).
   - `textures.py` — 7-provider tile registry, mosaic merge, exact-bbox crop.
+  - `worldcover.py` — ESA WorldCover 10 m land-cover tiles: 3°-lattice tile selection, keyless `/vsicurl/` read from AWS Open Data, and a nearest-neighbour `gdal.Warp` onto the world's square UTM grid (categorical, so no interpolation). Backs `--foliage-mask worldcover`.
 - `terraforge.data_processing`
   - `elevation_processor.py` — UTM DEM → normalized 16-bit PNG heightmap; exposes `sample_dem_elevation_utm(utm_x, utm_y)` and `next_ogre2_size(n)`.
   - `building_processor.py` — OSM polygons → per-building SDF models with polyline visuals + bbox collisions.
   - `tree_processor.py` — 5 reusable tree variants + forest-polygon scatter; clipped to world bbox.
   - `road_processor.py` — OSM LineStrings → polyline ribbons (visual-only).
+  - `foliage_mask.py` — the boolean "scatter a tree here?" raster the tree processor consumes. `rgb-osm`: EXG + local-σ canopy detector on the texture, unioned with OSM positives, minus buildings/roads/parking. `worldcover`: ESA WorldCover tree-cover as the positive, built-up/water + the same OSM negatives as the carve-out.
   - `cloud_mask.py` — HLS-based cloud detection with morphological opening + per-(lat, lon) lookup.
   - `texture_processor.py` — copies the cropped mosaic into `media_<world-name>/materials/textures/`.
   - `sdf_builder.py` — Jinja SDF world template renderer.
