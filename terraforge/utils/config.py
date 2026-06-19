@@ -34,9 +34,13 @@ class Config:
         self.TEXTURE_CACHE_DIR = os.environ.get(
             'TERRAFORGE_TEXTURE_DIR', os.path.join(cache_root, 'textures')
         )
+        self.WORLDCOVER_CACHE_DIR = os.environ.get(
+            'TERRAFORGE_WORLDCOVER_DIR', os.path.join(cache_root, 'worldcover')
+        )
         os.makedirs(self.DEM_CACHE_DIR, exist_ok=True)
         os.makedirs(self.OSM_CACHE_DIR, exist_ok=True)
         os.makedirs(self.TEXTURE_CACHE_DIR, exist_ok=True)
+        os.makedirs(self.WORLDCOVER_CACHE_DIR, exist_ok=True)
 
 
 config = Config()

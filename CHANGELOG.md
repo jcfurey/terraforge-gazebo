@@ -7,6 +7,42 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- Fuel-mode trees (`--foliage-style fuel`) now carry a **trunk-cylinder
+  collision** in their generated wrapper, matching the cartoon path, so a
+  rover collides with the trunk instead of driving through it (the canopy
+  stays visual-only so it can pass under the crown). Regression test
+  `test/test_tree_collision.py` pins the invariant for both styles. Existing
+  `models_fuel/` wrappers from older runs are left untouched (idempotent
+  writer), so regenerate or delete them to pick up trunk collision.
+- Roads (`--with-roads`) are now **DEM-draped mesh ribbons with collision**
+  instead of flat, visual-only, per-segment polyline slabs. Each OSM way is
+  chunked (for per-tile streaming), densified, offset to its per-class width,
+  and every left/right cross-section vertex samples the terrain so the ribbon
+  follows the relief smoothly. The baked OBJ backs both `<visual>` and a
+  `<collision>` with asphalt friction, so the rover drives on the road over
+  the (now collidable) terrain. New `mesh_builder.generate_ribbon_obj` and
+  `test/test_road_mesh.py`.
+- Buildings are now real **extruded-footprint meshes** instead of a
+  `<polyline>` visual + axis-aligned-bbox collision. Each building bakes to a
+  watertight OBJ (walls + base + roof) under `models/building_meshes/`, used
+  for both `<visual>` and `<collision>`, so robots collide with the true
+  footprint. Roofs are flat by default or **pitched** (gabled / hipped /
+  pyramidal) when OSM tags `roof:shape` on a rectangular-ish footprint
+  (`roof:height` / `roof:levels` honoured). New dependency-free module
+  `terraforge/data_processing/mesh_builder.py` (ear-clipping triangulator +
+  OBJ writer) and `test/test_mesh_builder.py`. Degenerate footprints still
+  fall back to a bbox body.
+- `--foliage-mask worldcover`: a third foliage-mask mode driven by the ESA
+  WorldCover 10 m land-cover raster (keyless AWS Open Data, CC BY 4.0) instead
+  of the RGB EXG heuristic. Authoritative *tree-cover* is the positive;
+  *built-up* + *water* and the same OSM building/road/parking buffers are the
+  negative. Tiles are read straight from the Cloud-Optimized GeoTIFFs over
+  GDAL `/vsicurl/` (no whole-tile download) and warped nearest-neighbour onto
+  the world's UTM grid. Works without any satellite imagery, so it's robust
+  where OSM foliage tagging is sparse or the texture is cloudy/seasonal. New
+  module `terraforge/data_acquisition/worldcover.py`, `WORLDCOVER_CACHE_DIR`
+  (`TERRAFORGE_WORLDCOVER_DIR`) cache, and `test/test_worldcover*.py`. The mode
+  was previously reserved and raised `NotImplementedError`.
 - `terraforge/__main__.py` module entry point: `python3 -m terraforge` is now
   the documented standalone invocation. setup.cfg routes the console scripts
   into `lib/terraforge_gazebo/` (so `ros2 run` works in a colcon workspace),
@@ -30,6 +66,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `test/test_cli_helpers.py` covering the extracted `cli` helpers.
 
 ### Changed
+- **Physics engine is now dartsim** (was plain bullet). dartsim is the
+  gz-physics 7 backend that supports both collision shapes this generator
+  emits, which unlocks two behavioural changes:
+    - **Terrain heightmap now has collision** — the rover drives on the real
+      DEM relief instead of a flat stand-in plane, and buildings/trees sit on
+      the surface they collide with. The flat `<ground_plane>` is kept only
+      for worlds generated without a DEM.
+    - Buildings collide as meshes (see Added) rather than bounding boxes.
+  Skid-steer/diff-drive bases still yaw in place correctly (dartsim honours
+  `<fdir1>`, unlike the bullet-featherstone path of gz-physics#697). The
+  physics-system `<engine>` selects `gz-physics-dartsim-plugin`; the `<physics
+  type>` declaration matches.
 - Foliage-mask sigma max-pool now uses a true numpy block max-pool
   (`np.maximum.reduceat`) instead of `MaxFilter(~factor)` + NEAREST resize —
   ~16 s → milliseconds on a 2545² texture; end-to-end generation ~22 s → ~4 s

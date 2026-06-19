@@ -13,6 +13,7 @@ Regression guards:
 """
 
 import json
+import os
 
 import pytest
 
@@ -132,14 +133,23 @@ def test_polygon_with_interior_uses_hole_adjusted_area(tmp_path):
     }
     path = str(tmp_path / 'buildings.geojson')
     _write_geojson(path, [feat])
+    models_dir = str(tmp_path / 'models')
     placements = building_processor.process_osm_buildings_to_sdf(
-        path, str(tmp_path / 'models'), origin_wgs84=(0.0, 0.0),
+        path, models_dir, origin_wgs84=(0.0, 0.0),
     )
     assert len(placements) == 1
-    # body_sdf should include the full exterior ring's vertices; the
-    # hole is omitted (bbox collision fallback can't represent it).
+    # Geometry is now an extruded mesh referenced by the body fragment for
+    # both visual and collision.
     sdf = placements[0]['body_sdf']
-    assert sdf.count('<point>') >= 4
+    assert '<mesh>' in sdf and '.obj' in sdf
+    # The OBJ uses the exterior ring only (the hole is omitted), so a
+    # rectangular footprint yields exactly 8 vertices: 4 base + 4 flat-roof.
+    meshes_dir = os.path.join(models_dir, 'building_meshes')
+    objs = [f for f in os.listdir(meshes_dir) if f.endswith('.obj')]
+    assert len(objs) == 1, objs
+    with open(os.path.join(meshes_dir, objs[0]), encoding='utf-8') as fh:
+        n_verts = sum(1 for line in fh if line.startswith('v '))
+    assert n_verts == 8, n_verts
 
 
 def test_invalid_multipolygon_part_is_counted_but_does_not_crash(tmp_path):

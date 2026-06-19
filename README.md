@@ -20,16 +20,17 @@ Beta. Packaged as an **ament_python** ROS 2 package called `terraforge_gazebo`, 
 - **CLI and GUI**: generate worlds from the command line or from a small PyQt6 UI.
 - **Real-world data**:
   - SRTM DEM via the `elevation` PyPI package → 16-bit PNG heightmap, resampled to Ogre2-valid `2^n+1` dimensions, vertically shifted so the world origin sits at real ground elevation.
-  - OSM **buildings** via `osmnx` → per-building Gazebo models with SDF `<polyline>` footprint visuals + bbox collisions, height inferred from OSM tags, color by `building=*` category, base Z sampled from the DEM so buildings sit on slopes.
-  - OSM **foliage** (`natural=tree|tree_row|wood|scrub|heath`, `landuse=forest|orchard|vineyard`, `leisure=park|garden`) → trunk-cylinder + sphere-canopy tree instances, scattered inside forest polygons at a reproducible seeded density (clipped to the world bbox).
+  - OSM **buildings** via `osmnx` → per-building **watertight extruded-footprint meshes** (walls + base + roof) baked to OBJ and referenced for both `<visual>` and `<collision>`, so robots collide with the real footprint instead of a bounding box. Roofs are flat by default, or **pitched** (gabled / hipped / pyramidal) when OSM tags `roof:shape` on a rectangular-ish footprint. Height inferred from OSM tags, color by `building=*` category, base Z sampled from the DEM so buildings sit on slopes. Degenerate footprints fall back to a bbox body.
+  - OSM **foliage** (`natural=tree|tree_row|wood|scrub|heath`, `landuse=forest|orchard|vineyard`, `leisure=park|garden`) → trunk-cylinder + sphere-canopy tree instances, scattered inside forest polygons at a reproducible seeded density (clipped to the world bbox). Every tree (both `cartoon` and `fuel` styles) carries a **trunk-cylinder collision** so a rover can't drive through trunks; the canopy stays visual-only so it can pass under the crown.
   - **RGB + OSM foliage mask** *(default `--foliage-mask rgb-osm`)* — combines an ExcessGreen (EXG) canopy detector on the satellite texture with the OSM vegetation polygons above (additive), minus buildings, buffered roads, and parking lots, so trees scatter on genuine canopy without landing on asphalt, rooftops, or lawns. `--foliage-mask off` falls back to the legacy bare-EXG heuristic.
+  - **ESA WorldCover foliage mask** *(`--foliage-mask worldcover`)* — instead of the RGB heuristic, drives tree placement from the ESA WorldCover 10 m land-cover raster (keyless AWS Open Data, CC BY 4.0): the authoritative *tree-cover* class is the positive, *built-up* + *water* and the same OSM building/road/parking buffers are the negative. Read straight from the Cloud-Optimized GeoTIFFs over `/vsicurl/` (no whole-tile download) and warped to the world's UTM grid. Needs no satellite imagery, so it's robust where OSM foliage tagging is sparse or the texture is cloudy/seasonal.
   - **Two foliage rendering styles** *(`--foliage-style`)* — `cartoon` *(default)*: inline trunk+canopy primitives baked into each tile compound, no external deps. `fuel`: emit each tree as a top-level `<include>` of `model://tree_fuel_<variant>` backed by Gazebo Fuel meshes (Oak / Pine Tree); wrappers must be reachable via `GZ_SIM_RESOURCE_PATH` or a `models_fuel/` subdir of the output world, and the CLI warns up front if any are missing.
-  - OSM **roads** *(opt-in, `--with-roads`)* → `highway=*` LineStrings buffered by per-class width into flat asphalt polyline ribbons.
+  - OSM **roads** *(opt-in, `--with-roads`)* → `highway=*` LineStrings become **draped mesh ribbons with collision**: each way is chunked, densified, offset to per-class width, and its cross-sections sampled against the DEM so the road follows the terrain relief. The mesh backs both `<visual>` and a `<collision>` with asphalt friction, so the rover drives on the road over the terrain it collides with.
   - **Cloud masking** on the satellite imagery — drops asset placements whose pixel looks cloud-like (high luminance + low saturation + morphological opening to dismiss small false-positive blobs like bright rooftops).
 - **Seven satellite tile providers** with a registry (`esri`, `sentinel2`, `usgs_naip`, `gibs_bluemarble`, `mapbox`, `maptiler`, `bing`). Esri is the recommended keyless default. Mosaics are precision-cropped to the exact user bbox before saving.
 - **Strict UTM coordinate handling** — bbox math and asset placement use the local UTM zone (EPSG:326XX / 327XX), not Web Mercator, so feature positions match the textured terrain to within pyproj precision at any latitude.
 - **Portable output**: each generated world ships with its own `models/` + `media_<world-name>/` subdirectories, loaded via `GZ_SIM_RESOURCE_PATH` + baked-in `file://` paths.
-- **Physics-ready SDF template**: loads plain `bullet`, the IMU + Contact systems, and a flat collision ground plane (the bullet engines don't support SDF heightmap collision; dartsim does in gz-physics 7, but is not used here). Plain bullet — not bullet-featherstone — because featherstone cannot yaw a skid-steer base in place (its contact path ignores `fdir1`, so wheel-frame friction anisotropy is inexpressible; upstream gz-physics issue #697). Workspace rovers drive on flat ground while the heightmap renders visually.
+- **Physics-ready SDF template**: loads **dartsim** (mandatory), the IMU + Contact systems. dartsim is the gz-physics 7 backend that supports both collision shapes this generator emits — `<heightmap>` collision *and* `<mesh>` collision — and still skid-steers correctly (it honours `<fdir1>`, unlike bullet-featherstone; upstream gz-physics issue #697). So rovers **drive on the real DEM terrain** (the heightmap is the collision surface, not just a visual) and collide with the **per-building extruded-footprint meshes**. Worlds generated without a DEM fall back to a flat collision ground plane.
 - **ROS 2 integration**: a `spawn_world.launch.py` that wraps `ros_gz_sim`'s `gz_sim.launch.py`.
 
 ## Use inside a ROS 2 Jazzy workspace
@@ -139,10 +140,11 @@ Environment variables:
 | `MAPBOX_API_KEY` | "" | Access token for `mapbox` provider |
 | `MAPTILER_API_KEY` | "" | Access token for `maptiler` provider |
 | `BING_MAPS_API_KEY` | "" | Access token for `bing` provider |
-| `TERRAFORGE_CACHE_DIR` | `$XDG_CACHE_HOME/terraforge` or `~/.cache/terraforge` | Cache root for DEM/OSM/texture downloads |
+| `TERRAFORGE_CACHE_DIR` | `$XDG_CACHE_HOME/terraforge` or `~/.cache/terraforge` | Cache root for DEM/OSM/texture/WorldCover downloads |
 | `TERRAFORGE_DEM_DIR` | `<cache-root>/dem` | Override DEM cache location |
 | `TERRAFORGE_OSM_DIR` | `<cache-root>/osm` | Override OSM cache location |
 | `TERRAFORGE_TEXTURE_DIR` | `<cache-root>/textures` | Override texture cache location |
+| `TERRAFORGE_WORLDCOVER_DIR` | `<cache-root>/worldcover` | Override ESA WorldCover cache location (used by `--foliage-mask worldcover`) |
 
 ### Tile providers
 
@@ -165,15 +167,18 @@ Attribution is emitted as a log line per generation run; include it when publish
   - `elevation.py` — SRTM DEM download, **UTM-correct** WGS84 bbox, and WGS84→UTM reprojection (`reproject_dem_to_utm`) onto a true meter-square Ogre2-valid grid.
   - `osm.py` — buildings / foliage / roads downloaders (all `osmnx.features_from_bbox`).
   - `textures.py` — 7-provider tile registry, mosaic merge, exact-bbox crop.
+  - `worldcover.py` — ESA WorldCover 10 m land-cover tiles: 3°-lattice tile selection, keyless `/vsicurl/` read from AWS Open Data, and a nearest-neighbour `gdal.Warp` onto the world's square UTM grid (categorical, so no interpolation). Backs `--foliage-mask worldcover`.
 - `terraforge.data_processing`
   - `elevation_processor.py` — UTM DEM → normalized 16-bit PNG heightmap; exposes `sample_dem_elevation_utm(utm_x, utm_y)` and `next_ogre2_size(n)`.
-  - `building_processor.py` — OSM polygons → per-building SDF models with polyline visuals + bbox collisions.
+  - `building_processor.py` — OSM polygons → per-building extruded-mesh bodies (mesh visual + mesh collision) with OSM-tag roof shapes; bbox fallback for degenerate footprints.
+  - `mesh_builder.py` — dependency-free watertight building-mesh generator: ear-clipping triangulator + footprint extrusion + flat/gabled/hipped/pyramidal roofs, written to OBJ.
   - `tree_processor.py` — 5 reusable tree variants + forest-polygon scatter; clipped to world bbox.
-  - `road_processor.py` — OSM LineStrings → polyline ribbons (visual-only).
+  - `road_processor.py` — OSM LineStrings → DEM-draped mesh ribbon chunks with mesh collision (asphalt friction) + visual; chunked for per-tile streaming.
+  - `foliage_mask.py` — the boolean "scatter a tree here?" raster the tree processor consumes. `rgb-osm`: EXG + local-σ canopy detector on the texture, unioned with OSM positives, minus buildings/roads/parking. `worldcover`: ESA WorldCover tree-cover as the positive, built-up/water + the same OSM negatives as the carve-out.
   - `cloud_mask.py` — HLS-based cloud detection with morphological opening + per-(lat, lon) lookup.
   - `texture_processor.py` — copies the cropped mosaic into `media_<world-name>/materials/textures/`.
   - `sdf_builder.py` — Jinja SDF world template renderer.
-  - `templates/world_template.sdf.j2` — the SDF skeleton (physics engine, lighting, terrain, buildings, trees, roads, collision ground-plane).
+  - `templates/world_template.sdf.j2` — the SDF skeleton (dartsim physics engine, lighting, terrain with heightmap collision, buildings, trees, roads; flat collision ground-plane only when there's no DEM).
 - `terraforge.utils.coordinates` — WGS84 ↔ UTM ↔ local-Gazebo converter (local UTM zone derived from origin longitude, not Web Mercator).
 - `terraforge.ui.main_window` — PyQt6 GUI.
 - `experimental/ui/` — Custom PyQt map/GL widgets. Not wired into the main GUI; kept for future map-preview work.

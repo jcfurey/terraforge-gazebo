@@ -74,3 +74,36 @@ def test_no_double_hyphen_inside_comments():
 def test_streaming_disabled_render_is_also_well_formed():
     root = ET.fromstring(_render(enable_level_streaming=False))
     assert root.tag == 'sdf'
+
+
+def test_physics_engine_is_dartsim():
+    # dartsim is mandatory: it's the only gz-physics backend that supports
+    # both heightmap and mesh collision (and skid-steer via fdir1).
+    root = ET.fromstring(_render())
+    physics = root.find('./world/physics')
+    assert physics.get('type') == 'dartsim'
+    engine_files = [
+        e.text for e in
+        (p.find('engine/filename') for p in root.findall('./world/plugin'))
+        if e is not None
+    ]
+    assert 'gz-physics-dartsim-plugin' in engine_files, engine_files
+
+
+def test_heightmap_world_has_terrain_collision_and_no_flat_plane():
+    # With a DEM, the terrain heightmap is the driving surface and the flat
+    # ground plane is omitted to avoid a conflicting second floor.
+    root = ET.fromstring(_render())  # default kwargs include a heightmap
+    models = {m.get('name'): m for m in root.findall('./world/model')}
+    assert 'terrain' in models
+    assert models['terrain'].find('./link/collision/geometry/heightmap') is not None
+    assert 'ground_plane' not in models
+
+
+def test_flat_world_keeps_ground_plane_collision():
+    # Without a DEM, fall back to the flat collision+visual ground plane.
+    root = ET.fromstring(_render(heightmap_path=None))
+    models = {m.get('name'): m for m in root.findall('./world/model')}
+    assert 'ground_plane' in models
+    assert models['ground_plane'].find('./link/collision/geometry/plane') is not None
+    assert 'terrain' not in models
