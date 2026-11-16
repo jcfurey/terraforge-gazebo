@@ -9,6 +9,7 @@ to a flat roof, and that every emitted face winds outward (so gz-sim's
 backface culling shows the building from outside, not inside).
 """
 
+from collections import Counter
 import math
 
 import pytest
@@ -157,6 +158,37 @@ def test_ribbon_mismatched_or_short_input_returns_false(tmp_path):
     assert mesh_builder.generate_ribbon_obj(
         path, [(0, 0, 0), (1, 0, 0)], [(0, 1, 0)]
     ) is False
+
+
+@pytest.mark.parametrize('heights', [
+    [1.0, 0.0, 0.0, 1.0],
+    [0.0, 1.0, 1.0, 0.0],
+    [0.0, 1.0, 0.2, 1.5, 0.0],
+])
+def test_draped_ribbon_faces_keep_outward_winding(tmp_path, heights):
+    """Concave terrain must not invert road tops, bottoms or shared edges."""
+    left = [(i * 4.0, 2.0, z + 0.2) for i, z in enumerate(heights)]
+    right = [(i * 4.0, -2.0, z - 0.2) for i, z in enumerate(heights)]
+    top = set(left + right)
+    bottom = {(x, y, round(z - 0.08, 4)) for x, y, z in top}
+    path = str(tmp_path / 'draped.obj')
+    assert mesh_builder.generate_ribbon_obj(path, left, right)
+    verts, faces = _read_obj(path)
+    edges = Counter()
+    top_count = bottom_count = 0
+    for face in faces:
+        points = [verts[i] for i in face]
+        normal = _normal(*points)
+        if all(point in top for point in points):
+            assert normal[2] > 0, 'road top faces must point upward in valleys'
+            top_count += 1
+        if all(point in bottom for point in points):
+            assert normal[2] < 0, 'road underside faces must point downward'
+            bottom_count += 1
+        for a, b in zip(face, face[1:] + face[:1]):
+            edges[a, b] += 1
+    assert top_count == bottom_count == 2 * (len(heights) - 1)
+    assert all(count == 1 and edges[b, a] == 1 for (a, b), count in edges.items())
 
 
 def test_ear_clip_square_is_two_triangles():

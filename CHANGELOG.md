@@ -7,6 +7,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- `--no-texture` skips satellite downloads and uses a neutral terrain material
+  compatible with Ogre2. WorldCover tree placement uses its native land-cover
+  grid without imagery or OSM foliage.
 - Fuel-mode trees (`--foliage-style fuel`) now carry a **trunk-cylinder
   collision** in their generated wrapper, matching the cartoon path, so a
   rover collides with the trunk instead of driving through it (the canopy
@@ -97,6 +100,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   for readability and testability.
 
 ### Fixed
+- Named worlds now isolate building and road OBJ files under
+  `models/<world-name>/`, so generating another world in the same output
+  directory does not overwrite existing worlds' collision/visual geometry.
+- Road ribbon faces keep their topology-derived outward winding over valleys
+  and crests instead of being flipped toward a whole-mesh centroid.
+- WorldCover foliage scatters without a texture, including when an image is
+  missing or unreadable; built-up and water exclusions still apply.
 - **`rosdep install` failed on every clean host**: removed the bogus
   `<buildtool_depend>ament_python</buildtool_depend>` from `package.xml`
   (no such rosdep key exists; the build type is selected via

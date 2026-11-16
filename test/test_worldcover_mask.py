@@ -25,6 +25,7 @@ from terraforge.data_acquisition import worldcover  # noqa: E402
 from terraforge.data_processing.foliage_mask import (  # noqa: E402
     build_worldcover_mask,
 )
+from terraforge.data_processing.tree_processor import process_osm_trees_to_sdf  # noqa: E402
 from terraforge.utils.coordinates import CoordinateConverter  # noqa: E402
 
 gdal.UseExceptions()
@@ -98,6 +99,34 @@ def test_worldcover_mask_missing_file_returns_none(tmp_path):
         world_half_extent_m=50.0, converter=conv,
     )
     assert mask is None
+
+
+@pytest.mark.parametrize('texture', [None, 'missing.png', 'unreadable.png'])
+@pytest.mark.parametrize('style', ['cartoon', 'fuel'])
+def test_worldcover_scatter_needs_no_imagery(tmp_path, texture, style):
+    """Tree placement uses land-cover cells even without OSM or a texture."""
+    classes = np.full((40, 40), 80, dtype=np.uint8)
+    classes[:, :20] = 10
+    path = str(tmp_path / 'wc.tif')
+    _write_worldcover(path, classes)
+    mask = build_worldcover_mask(
+        path, (-0.001, -0.001, 0.001, 0.001), world_half_extent_m=100.0,
+        converter=CoordinateConverter((0.0, 0.0)),
+    )
+    assert mask is not None
+    texture_path = str(tmp_path / texture) if texture else None
+    if texture == 'unreadable.png':
+        with open(texture_path, 'w', encoding='utf-8') as image:
+            image.write('not an image')
+    placements = process_osm_trees_to_sdf(
+        str(tmp_path / 'missing.geojson'), str(tmp_path / 'models'), (0.0, 0.0),
+        world_half_extent_m=100.0, satellite_texture_path=texture_path,
+        foliage_mask=mask, foliage_style=style,
+    )
+    assert placements
+    assert all(x < 0 for x, _ in (tree['pose_xy'] for tree in placements))
+    fragment = 'link_sdf' if style == 'cartoon' else 'fuel_include_sdf'
+    assert all(fragment in tree for tree in placements)
 
 
 def _write_wgs84_tile(path, west, south, east, north, code, size=64):

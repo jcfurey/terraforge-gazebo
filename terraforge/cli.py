@@ -161,6 +161,7 @@ def run_generate_world(
     progress=None,
     progress_percent=None,
     cancel_flag=None,
+    with_texture=True,
 ):
     """Run the full world-generation pipeline.
 
@@ -199,6 +200,9 @@ def run_generate_world(
     # early check the first DEM download fires before the pipeline ever polls
     # cancel_flag, so a "cancel before anything runs" request is ignored.
     _check_cancel()
+
+    if not with_texture and texture_file is not None:
+        raise click.UsageError('--no-texture cannot be combined with --texture-file.')
 
     # Fuel mode needs self-contained model://tree_fuel_<i> wrappers written
     # into <output>/models_fuel/ before any trees are emitted. See
@@ -269,7 +273,7 @@ def run_generate_world(
         if not os.path.isfile(texture_user_path):
             raise click.UsageError(f'--texture-file does not exist: {texture_user_path}')
         _log(f'Using user-supplied orthophoto: {texture_user_path}')
-    else:
+    elif with_texture:
         _check_cancel()
         _log('Downloading satellite tiles...')
         _pct(25)
@@ -300,7 +304,9 @@ def run_generate_world(
         utm_crs=converter.utm_crs_string,
     )
 
-    output_models_dir = os.path.join(output_dir, 'models')
+    # Mesh URIs outlive generation. Keep each named world's building/road
+    # files separate so generating another world cannot replace its geometry.
+    output_models_dir = os.path.join(output_dir, 'models', world_name)
     # Per-world media subdir: `<output-dir>/media_<world_name>/`. Without the
     # suffix, a second generation at a different lat/lon (or with a different
     # foliage style at the same coords) would overwrite the first world's
@@ -374,7 +380,7 @@ def run_generate_world(
     # Let the masks scale their morphology kernels by meters-per-pixel so
     # thresholds behave the same at any zoom level.
     texture_meters_per_px = None
-    texture_available = os.path.exists(texture_source_path)
+    texture_available = with_texture and os.path.exists(texture_source_path)
     if texture_available:
         try:
             with Image.open(texture_source_path) as _tex:
@@ -469,11 +475,9 @@ def run_generate_world(
         elevation_sampler=sample_terrain_z,
         cloud_mask=cloud_mask,
         world_half_extent_m=radius,
-        # Image-based vegetation fill: scatter additional trees on green
-        # satellite pixels OSM didn't tag. Needs the UTM-reprojected texture
-        # (pixel grid == UTM meter grid) and the buildings geojson (exclude
-        # footprints so trunks don't land inside walls).
-        satellite_texture_path=texture_source_path,
+        # A foliage mask supplies its own UTM grid. The texture is only
+        # needed for the legacy EXG fallback when no mask is available.
+        satellite_texture_path=texture_source_path if texture_available else None,
         buildings_geojson_path=buildings_cache_path,
         foliage_style=foliage_style,
         # When present, foliage_mask overrides the legacy bare-EXG heuristic
@@ -499,7 +503,7 @@ def run_generate_world(
     # map, not a flat 4x4 stand-in. Keeping the filename stable so
     # existing world SDFs + downstream packaging continue to resolve.
     flat_normal_output_path = os.path.join(output_textures_dir, 'flat_normal.png')
-    if os.path.exists(texture_source_path):
+    if texture_available:
         _log(f'Copying orthophoto / satellite texture as {_texext.upper()}...')
         os.makedirs(os.path.dirname(texture_output_path), exist_ok=True)
         if _texext == 'png':
@@ -529,6 +533,13 @@ def run_generate_world(
             )
         else:
             Image.new('RGB', (4, 4), (128, 128, 255)).save(flat_normal_output_path)
+    else:
+        # Ogre2's heightmap shader requires a diffuse/normal pair even when
+        # imagery is disabled. Supply a neutral material without downloads
+        # or references to satellite files left by an earlier generation.
+        texture_output_path = os.path.join(output_textures_dir, 'neutral_diffuse.png')
+        Image.new('RGB', (4, 4), (128, 128, 128)).save(texture_output_path)
+        Image.new('RGB', (4, 4), (128, 128, 255)).save(flat_normal_output_path)
 
     # Save the cloud mask alongside the heightmap for debug / visualization.
     if cloud_mask is not None:
@@ -650,6 +661,10 @@ def cli(ctx, debug):
               help='User-supplied orthorectified image (PNG/JPEG/GeoTIFF). Overrides the '
                    'satellite tile download. Dimensions should roughly match the DEM extent; '
                    'Gazebo scales it to the heightmap size regardless.')
+@click.option('--with-texture/--no-texture', default=True,
+              help='Include satellite imagery (default). --no-texture skips imagery '
+                   'downloads and uses a neutral terrain material; WorldCover foliage '
+                   'needs no image.')
 @click.option('--max-heightmap-size', type=int, default=1025,
               help='Cap on heightmap PNG dimensions (must be one of 65, 129, 257, 513, '
                    '1025, 2049, 4097 — all 2^n+1). Default 1025. Raise to 2049 or 4097 '
@@ -701,7 +716,7 @@ def generate_world(ctx, latitude, longitude, side_length, radius, output_dir,
                    tile_zoom, tile_max_count, max_texture_px, texture_format,
                    with_roads, cloud_filter, dem_file, texture_file,
                    max_heightmap_size, performer_ref, disable_level_streaming,
-                   foliage_style, foliage_mask_mode):
+                   foliage_style, foliage_mask_mode, with_texture):
     """Generate a Gazebo Harmonic SDF world for a given location.
 
     Exactly one of ``--side-length`` (full side, preferred) or ``--radius``
@@ -714,6 +729,8 @@ def generate_world(ctx, latitude, longitude, side_length, radius, output_dir,
         raise click.UsageError('Use --side-length or --radius, not both.')
     if side_length is not None:
         radius = side_length / 2.0
+    if not with_texture and texture_file is not None:
+        raise click.UsageError('--no-texture cannot be combined with --texture-file.')
     if max_heightmap_size not in elevation_processor.OGRE2_VALID_SIZES:
         raise click.UsageError(
             f'--max-heightmap-size must be one of '
@@ -772,6 +789,7 @@ def generate_world(ctx, latitude, longitude, side_length, radius, output_dir,
             foliage_style=foliage_style.lower(),
             foliage_mask_mode=foliage_mask_mode.lower(),
             texture_format=texture_format.lower(),
+            with_texture=with_texture,
         )
     except Exception as e:
         logger.error(f'World generation failed: {e}')

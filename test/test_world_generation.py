@@ -1,0 +1,142 @@
+# Copyright 2024 TerraForge Contributors
+#
+# Licensed under the MIT License.
+"""Offline generation regressions for world assets and texture-free foliage."""
+
+import hashlib
+import json
+from pathlib import Path
+from urllib.parse import unquote, urlparse
+import xml.etree.ElementTree as ET
+
+import pytest
+
+np = pytest.importorskip('numpy')
+click = pytest.importorskip('click')
+Image = pytest.importorskip('PIL.Image')
+pytest.importorskip('osgeo')
+pytest.importorskip('osmnx')
+pytest.importorskip('shapely')
+
+from click.testing import CliRunner  # noqa: E402,I100,I202
+from osgeo import gdal, osr  # noqa: E402
+
+from terraforge import cli  # noqa: E402
+from terraforge.utils.coordinates import CoordinateConverter  # noqa: E402
+
+
+def _never_download(*args, **kwargs):
+    raise AssertionError('offline generation attempted a download')
+
+
+@pytest.fixture
+def offline_site(tmp_path, monkeypatch):
+    for attribute in ('DEM_CACHE_DIR', 'OSM_CACHE_DIR', 'TEXTURE_CACHE_DIR',
+                      'WORLDCOVER_CACHE_DIR'):
+        directory = tmp_path / attribute
+        directory.mkdir()
+        monkeypatch.setattr(cli.config, attribute, str(directory))
+    for name in ('download_osm_buildings', 'download_osm_trees',
+                 'download_osm_roads', 'download_osm_parking'):
+        monkeypatch.setattr(cli.osm, name, lambda *args, **kwargs: None)
+    monkeypatch.setattr(cli.elevation, 'download_dem', _never_download)
+    monkeypatch.setattr(cli.textures, 'download_satellite_texture_tiles', _never_download)
+    converter = CoordinateConverter((0.0, 0.0))
+    dem = tmp_path / 'source.tif'
+    ds = gdal.GetDriverByName('GTiff').Create(str(dem), 65, 65, 1, gdal.GDT_Float32)
+    ds.SetGeoTransform((converter.origin_utm_x - 100, 200 / 65, 0,
+                        converter.origin_utm_y + 100, 0, -200 / 65))
+    srs = osr.SpatialReference()
+    srs.ImportFromEPSG(32631)
+    ds.SetProjection(srs.ExportToWkt())
+    ds.GetRasterBand(1).WriteArray(np.tile(np.linspace(0, 10, 65), (65, 1)))
+    ds = None
+    key = 'loc_0.0000_0.0000_r100.0'
+    layers = {
+        'roads': [{
+            'type': 'Feature', 'properties': {'osmid': 'road', 'highway': 'residential'},
+            'geometry': {'type': 'LineString', 'coordinates': [[-0.0005, 0], [0.0005, 0]]},
+        }],
+        'buildings': [{
+            'type': 'Feature', 'properties': {'osmid': 'building', 'height': 6},
+            'geometry': {'type': 'Polygon', 'coordinates': [[
+                [0.0002, 0.0002], [0.0003, 0.0002], [0.0003, 0.0003],
+                [0.0002, 0.0003], [0.0002, 0.0002]]]},
+        }],
+    }
+    for label, features in layers.items():
+        path = Path(cli.config.OSM_CACHE_DIR) / f'{key}_{label}.geojson'
+        path.write_text(json.dumps({'type': 'FeatureCollection', 'features': features}))
+    return {'latitude': 0.0, 'longitude': 0.0, 'radius': 100.0, 'dem_file': str(dem),
+            'output_dir': str(tmp_path / 'output'), 'cloud_filter': False,
+            'foliage_mask_mode': 'off', 'disable_level_streaming': True}
+
+
+def _mesh_assets(world):
+    root = ET.parse(world)
+    return {Path(unquote(urlparse(uri.text).path)) for uri in root.findall('.//mesh/uri')}
+
+
+def test_named_worlds_preserve_each_others_meshes(offline_site, tmp_path):
+    texture = tmp_path / 'orthophoto.png'
+    Image.new('RGB', (65, 65), (100, 100, 100)).save(texture)
+    offline_site['texture_file'] = str(texture)
+    first = cli.run_generate_world(**offline_site, world_name='first',
+                                   height_amplitude=1, with_roads=True)
+    first_assets = _mesh_assets(first)
+    assert any('building_meshes' in path.parts for path in first_assets)
+    assert any('road_meshes' in path.parts for path in first_assets)
+    original = {path: hashlib.sha256(path.read_bytes()).hexdigest() for path in first_assets}
+    second = cli.run_generate_world(**offline_site, world_name='second',
+                                    height_amplitude=10, with_roads=True)
+    second_assets = _mesh_assets(second)
+    assert first_assets.isdisjoint(second_assets)
+    assert all(hashlib.sha256(path.read_bytes()).hexdigest() == digest
+               for path, digest in original.items())
+    first_road = next(path for path in first_assets if 'road_meshes' in path.parts)
+    second_road = next(path for path in second_assets if path.name == first_road.name)
+    assert first_road.read_bytes() != second_road.read_bytes()
+
+
+def test_worldcover_cli_generates_trees_without_downloading_imagery(offline_site, monkeypatch):
+    def local_worldcover(*args, width, height, output_path, **kwargs):
+        ds = gdal.GetDriverByName('GTiff').Create(output_path, width, height, 1, gdal.GDT_Byte)
+        ds.GetRasterBand(1).WriteArray(np.full((height, width), 10, dtype=np.uint8))
+        ds = None
+        return output_path
+    monkeypatch.setattr(cli.worldcover, 'download_worldcover_utm', local_worldcover)
+    # --no-texture must also ignore imagery cached or generated by older runs.
+    cached = Path(cli.config.TEXTURE_CACHE_DIR) / 'loc_0.0000_0.0000_r100.0_texture'
+    cached.mkdir(parents=True)
+    (cached / 'satellite_texture.png').write_bytes(b'unreadable cached image')
+    previous = Path(offline_site['output_dir']) / 'media_forest/materials/textures'
+    previous.mkdir(parents=True)
+    (previous / 'satellite_texture.jpg').write_bytes(b'old generated texture')
+    (previous / 'flat_normal.png').write_bytes(b'old generated normal map')
+    result = CliRunner().invoke(cli.cli, [
+        'generate-world', '--latitude', '0', '--longitude', '0', '--side-length', '200',
+        '--dem-file', offline_site['dem_file'], '--output-dir', offline_site['output_dir'],
+        '--world-name', 'forest', '--foliage-mask', 'worldcover', '--no-texture',
+        '--disable-level-streaming',
+    ])
+    assert result.exit_code == 0, result.output
+    root = ET.parse(Path(offline_site['output_dir']) / 'forest.world')
+    assert root.find('.//collision/geometry/heightmap') is not None
+    assert root.findall('.//link/collision/geometry/cylinder'), 'WorldCover must scatter trunks'
+    textures = root.findall('.//heightmap/texture')
+    assert textures, 'Ogre2 heightmaps need a diffuse/normal pair even without imagery'
+    for texture in textures:
+        diffuse = Path(unquote(urlparse(texture.findtext('diffuse')).path))
+        normal = Path(unquote(urlparse(texture.findtext('normal')).path))
+        assert diffuse.name == 'neutral_diffuse.png'
+        with Image.open(diffuse) as image:
+            assert set(image.getdata()) == {(128, 128, 128)}
+        with Image.open(normal) as image:
+            assert set(image.getdata()) == {(128, 128, 255)}
+
+
+def test_no_texture_rejects_a_supplied_texture_before_generation(monkeypatch, tmp_path):
+    monkeypatch.setattr(cli.osm, 'download_osm_buildings', _never_download)
+    with pytest.raises(click.UsageError, match='--no-texture.*--texture-file'):
+        cli.run_generate_world(latitude=0, longitude=0, radius=100, output_dir=str(tmp_path),
+                               with_texture=False, texture_file='supplied.png')

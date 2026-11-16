@@ -648,26 +648,22 @@ def _scatter_on_vegetation(
     When it's ``None``, fall back to the legacy bare-EXG heuristic so callers
     that predate the foliage-mask CLI flag (``--foliage-mask off``) still work.
     """
-    if not texture_path or not os.path.exists(texture_path):
-        logger.info('No satellite texture — skipping vegetation-based tree fill.')
-        return 0
-    # Figure out the reference pixel grid. We always use the satellite
-    # texture's native grid so the sampled Gazebo-frame (cx, cy) → pixel
-    # conversion below is an exact identity with the texture, regardless
-    # of how the mask itself was constructed (at ~5 m/px internally).
-    with Image.open(texture_path) as _tex_img:
-        w, h = _tex_img.size
-
     if foliage_mask is not None:
+        # The mask already defines the UTM grid and placeable classes.
+        # WorldCover needs no imagery, including for grid dimensions.
+        w, h = foliage_mask.width, foliage_mask.height
         placeable = foliage_mask.sample_grid(w, h, world_half_extent_m)
         placeable_frac = float(placeable.mean()) if placeable.size else 0.0
         logger.info(
             f'Vegetation scatter using FoliageMask '
-            f'(mask native {foliage_mask.width}x{foliage_mask.height}, '
-            f'placeable {placeable_frac:.1%} after resample to {w}x{h})'
+            f'({w}x{h}, placeable {placeable_frac:.1%})'
         )
     else:
+        if not texture_path or not os.path.exists(texture_path):
+            logger.info('No foliage mask or satellite texture — skipping vegetation fill.')
+            return 0
         veg_mask, _ = _build_vegetation_mask(texture_path)
+        h, w = veg_mask.shape
         bldg_mask = _rasterize_building_mask(
             building_polys_gazebo, (w, h), world_half_extent_m,
             dilate_m=VEGETATION_BUILDING_BUFFER_M,
@@ -684,7 +680,8 @@ def _scatter_on_vegetation(
 
     pitch_m = 1.0 / math.sqrt(VEGETATION_DENSITY)
     jitter = pitch_m * 0.35  # random offset within cell to break the grid pattern
-    px_per_m = w / (2.0 * world_half_extent_m)
+    px_per_m_x = w / (2.0 * world_half_extent_m)
+    px_per_m_y = h / (2.0 * world_half_extent_m)
 
     grid_n = int((2.0 * world_half_extent_m) / pitch_m)
 
@@ -700,8 +697,8 @@ def _scatter_on_vegetation(
             return len(placements_list) - before
         cx = -world_half_extent_m + (ix + 0.5) * pitch_m + rng.uniform(-jitter, jitter)
         cy = -world_half_extent_m + (iy + 0.5) * pitch_m + rng.uniform(-jitter, jitter)
-        px = int((cx + world_half_extent_m) * px_per_m)
-        py = int((world_half_extent_m - cy) * px_per_m)
+        px = int((cx + world_half_extent_m) * px_per_m_x)
+        py = int((world_half_extent_m - cy) * px_per_m_y)
         if px < 0 or px >= w or py < 0 or py >= h:
             continue
         if not placeable[py, px]:
@@ -750,7 +747,7 @@ def process_osm_trees_to_sdf(osm_filepath: str, models_dir: str, origin_wgs84: t
     have_osm_foliage = os.path.exists(osm_filepath)
     if not have_osm_foliage:
         logger.info(
-            'No OSM foliage file; scattering from satellite imagery alone.'
+            'No OSM foliage file; scattering from foliage mask or satellite imagery.'
         )
     else:
         logger.info(f'Processing OSM foliage from {osm_filepath}')
@@ -914,13 +911,11 @@ def process_osm_trees_to_sdf(osm_filepath: str, models_dir: str, origin_wgs84: t
 
     osm_count = len(placements)
 
-    # Image-based vegetation fill: scatter additional trees on satellite
-    # pixels that look like canopy but weren't covered by OSM tags. Vicksburg
-    # is a good example — OSM has 3 foliage features for 2 km², the actual
-    # ground is heavily wooded. Runs only if caller gave us a UTM-reprojected
-    # satellite texture (without that, pixel-to-Gazebo mapping is off).
+    # Scatter additional trees from the supplied UTM foliage mask, or use
+    # the legacy satellite EXG heuristic when no mask was built. A WorldCover
+    # mask is sufficient even when neither OSM foliage nor imagery is present.
     veg_count = 0
-    if vegetation_fill and satellite_texture_path:
+    if vegetation_fill and (foliage_mask is not None or satellite_texture_path):
         remaining = max(0, MAX_FOREST_TREES - osm_count)
         if remaining == 0:
             logger.info('Tree budget exhausted by OSM; skipping vegetation fill.')

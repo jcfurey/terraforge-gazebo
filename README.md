@@ -23,7 +23,7 @@ Beta. Packaged as an **ament_python** ROS 2 package called `terraforge_gazebo`, 
   - OSM **buildings** via `osmnx` → per-building **watertight extruded-footprint meshes** (walls + base + roof) baked to OBJ and referenced for both `<visual>` and `<collision>`, so robots collide with the real footprint instead of a bounding box. Roofs are flat by default, or **pitched** (gabled / hipped / pyramidal) when OSM tags `roof:shape` on a rectangular-ish footprint. Height inferred from OSM tags, color by `building=*` category, base Z sampled from the DEM so buildings sit on slopes. Degenerate footprints fall back to a bbox body.
   - OSM **foliage** (`natural=tree|tree_row|wood|scrub|heath`, `landuse=forest|orchard|vineyard`, `leisure=park|garden`) → trunk-cylinder + sphere-canopy tree instances, scattered inside forest polygons at a reproducible seeded density (clipped to the world bbox). Every tree (both `cartoon` and `fuel` styles) carries a **trunk-cylinder collision** so a rover can't drive through trunks; the canopy stays visual-only so it can pass under the crown.
   - **RGB + OSM foliage mask** *(default `--foliage-mask rgb-osm`)* — combines an ExcessGreen (EXG) canopy detector on the satellite texture with the OSM vegetation polygons above (additive), minus buildings, buffered roads, and parking lots, so trees scatter on genuine canopy without landing on asphalt, rooftops, or lawns. `--foliage-mask off` falls back to the legacy bare-EXG heuristic.
-  - **ESA WorldCover foliage mask** *(`--foliage-mask worldcover`)* — instead of the RGB heuristic, drives tree placement from the ESA WorldCover 10 m land-cover raster (keyless AWS Open Data, CC BY 4.0): the authoritative *tree-cover* class is the positive, *built-up* + *water* and the same OSM building/road/parking buffers are the negative. Read straight from the Cloud-Optimized GeoTIFFs over `/vsicurl/` (no whole-tile download) and warped to the world's UTM grid. Needs no satellite imagery, so it's robust where OSM foliage tagging is sparse or the texture is cloudy/seasonal.
+  - **ESA WorldCover foliage mask** *(`--foliage-mask worldcover`)* — instead of the RGB heuristic, drives tree placement from the ESA WorldCover 10 m land-cover raster (keyless AWS Open Data, CC BY 4.0): the authoritative *tree-cover* class is the positive, *built-up* + *water* and the same OSM building/road/parking buffers are the negative. Read straight from the Cloud-Optimized GeoTIFFs over `/vsicurl/` (no whole-tile download) and warped to the world's UTM grid. Add `--no-texture` to generate and scatter trees without satellite imagery; the mask supplies its own pixel grid.
   - **Two foliage rendering styles** *(`--foliage-style`)* — `cartoon` *(default)*: inline trunk+canopy primitives baked into each tile compound, no external deps. `fuel`: emit each tree as a top-level `<include>` of `model://tree_fuel_<variant>` backed by Gazebo Fuel meshes (Oak / Pine Tree); wrappers must be reachable via `GZ_SIM_RESOURCE_PATH` or a `models_fuel/` subdir of the output world, and the CLI warns up front if any are missing.
   - OSM **roads** *(opt-in, `--with-roads`)* → `highway=*` LineStrings become **draped mesh ribbons with collision**: each way is chunked, densified, offset to per-class width, and its cross-sections sampled against the DEM so the road follows the terrain relief. The mesh backs both `<visual>` and a `<collision>` with asphalt friction, so the rover drives on the road over the terrain it collides with.
   - **Cloud masking** on the satellite imagery — drops asset placements whose pixel looks cloud-like (high luminance + low saturation + morphological opening to dismiss small false-positive blobs like bright rooftops).
@@ -101,11 +101,10 @@ python3 -m terraforge.ui.main_window
 ```
 <output-dir>/
 ├── <world-name>.world
-├── models/                       (reserved; currently empty — buildings,
-│                                  cartoon trees, and roads are inlined as
-│                                  <link>s inside per-tile compound <model>s
-│                                  so gz-sim parses one entity per tile, not
-│                                  one per OSM feature)
+├── models/
+│   └── <world-name>/             (per-world mesh assets)
+│       ├── building_meshes/     (extruded building OBJ files)
+│       └── road_meshes/         (DEM-draped road OBJ files, with --with-roads)
 ├── models_fuel/                  (only when --foliage-style fuel — auto-
 │   └── tree_fuel_0..4/            generated static wrappers; the launch
 │                                  file prepends this dir to
@@ -127,6 +126,17 @@ other's terrain imagery. The generated `.world` bakes an absolute `file://` path
 `media_<world-name>/` subdir, so worlds never collide. A pre-per-world-split `media/`
 directory from an older generation is left in place — safe to delete once you've
 regenerated.
+
+Building and road meshes are likewise isolated under `models/<world-name>/`.
+Their absolute file URIs remain valid when another named world is generated
+in the same output directory. Existing worlds using the old shared mesh paths
+keep those paths until regenerated.
+
+For a WorldCover-driven world without satellite downloads or terrain texturing,
+add `--foliage-mask worldcover --no-texture` to the generation command. Local
+DEM overrides still use `--dem-file`. `--no-texture` also ignores existing
+cached imagery and uses a neutral terrain material; it cannot be combined with
+`--texture-file`.
 
 The launch file prepends `<output-dir>/models` to `GZ_SIM_RESOURCE_PATH` so any `<include><uri>model://...</uri></include>` (tree / road / future building includes) resolve.
 
